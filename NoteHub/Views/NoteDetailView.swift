@@ -1,5 +1,6 @@
 import SwiftUI
 import CoreData
+import AVFoundation
 
 // MARK: - NoteDetailView
 struct NoteDetailView: View {
@@ -11,10 +12,20 @@ struct NoteDetailView: View {
     
     @State private var textController = TextViewController()
     @State private var isEditorFocused: Bool = false
+    
+    // Медиа состояния
+    @State private var showMediaPicker = false
+    @State private var mediaSourceType: UIImagePickerController.SourceType = .photoLibrary
+    @State private var selectedImage: UIImage?
+    @State private var showCameraAlert = false
+    @State private var cameraError: String = ""
+    @State private var isCheckingPermissions = false
+    
     var startEditing: Bool = false
     
     var body: some View {
         VStack(spacing: 0) {
+            // Заголовок
             TextField("Title", text: $editedTitle)
                 .font(.title)
                 .padding(.horizontal)
@@ -22,93 +33,265 @@ struct NoteDetailView: View {
             
             Divider()
             
-            FormattedTextView(attributedText: $editedText,
-                              isFirstResponder: $isEditorFocused,
-                              controller: textController)
-                .padding(.horizontal)
-                .frame(maxHeight: .infinity)
-                .background(Color(UIColor.systemBackground))
+            // Текстовый редактор
+            FormattedTextView(
+                attributedText: $editedText,
+                isFirstResponder: $isEditorFocused,
+                controller: textController
+            )
+            .padding(.horizontal)
+            .frame(maxHeight: .infinity)
+            .background(Color(UIColor.systemBackground))
             
+            // Панель инструментов
             if isEditorFocused {
-                VStack(spacing: 0) {
-                    Divider()
-                    HStack {
-                        FormatButton(systemImage: "bold") {
-                            textController.toggleTrait(.traitBold)
-                        }
-                        FormatButton(systemImage: "italic") {
-                            textController.toggleTrait(.traitItalic)
-                        }
-                        FormatButton(systemImage: "underline") {
-                            textController.toggleUnderline()
-                        }
-                        Menu {
-                            Button("H1") { textController.makeHeader(level: 1) }
-                            Button("H2") { textController.makeHeader(level: 2) }
-                            Button("H3") { textController.makeHeader(level: 3) }
-                        } label: {
-                            Image(systemName: "textformat.size")
-                        }
-                        .padding(.horizontal)
-                        
-                        Spacer()
-                    }
-                    .padding(.vertical, 8)
-                    .padding(.horizontal, 6)
-                    .background(VisualEffectView(effect: UIBlurEffect(style: .systemMaterial)))
-                }
-                .transition(.move(edge: .bottom).combined(with: .opacity))
+                toolbarView
             }
         }
         .navigationBarTitleDisplayMode(.inline)
         .navigationTitle(editedTitle.isEmpty ? "" : editedTitle)
-        .onAppear {
-            editedTitle = note.title ?? ""
-            
-            // Load formatted text
-            if let data = note.textData,
-               let attributed = try? NSKeyedUnarchiver.unarchivedObject(ofClass: NSAttributedString.self, from: data) {
-                editedText = attributed
-            } else {
-                editedText = NSAttributedString(string: note.text ?? "")
+        .sheet(isPresented: $showMediaPicker) {
+            mediaPickerView
+        }
+        .onChange(of: selectedImage) { oldValue, newValue in
+            handleSelectedImage(newValue)
+        }
+        .onChange(of: editedText) { oldValue, newValue in
+            saveNote()
+        }
+        .onChange(of: editedTitle) { oldValue, newValue in
+            saveNote()
+        }
+        .alert("Camera Access Required", isPresented: $showCameraAlert) {
+            Button("Settings") {
+                openAppSettings()
             }
-            
-            if startEditing {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-                    isEditorFocused = true
-                }
-            }
-            
-            // Callback для синхронизации
-            textController.onTextChange = { newText in
-                self.editedText = newText
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text(cameraError)
+        }
+        .overlay {
+            if isCheckingPermissions {
+                ProgressView("Checking permissions...")
+                    .padding()
+                    .background(Color.black.opacity(0.8))
+                    .foregroundColor(.white)
+                    .cornerRadius(10)
             }
         }
-        .onChange(of: editedText) { _ in saveNote() }
-        .onChange(of: editedTitle) { _ in saveNote() }
+        .onAppear {
+            setupNote()
+        }
         .onDisappear {
-            if editedTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-                editedText.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                viewContext.delete(note)
-                try? viewContext.save()
-            } else {
+            handleDisappear()
+        }
+    }
+    
+    // MARK: - Subviews
+    
+    private var toolbarView: some View {
+        VStack(spacing: 0) {
+            Divider()
+            HStack {
+                FormatButton(systemImage: "bold") {
+                    textController.toggleTrait(.traitBold)
+                }
+                FormatButton(systemImage: "italic") {
+                    textController.toggleTrait(.traitItalic)
+                }
+                FormatButton(systemImage: "underline") {
+                    textController.toggleUnderline()
+                }
+                
+                cameraButton
+                
+                headersMenu
+                
+                Spacer()
+            }
+            .padding(.vertical, 8)
+            .padding(.horizontal, 6)
+            .background(VisualEffectView(effect: UIBlurEffect(style: .systemMaterial)))
+        }
+    }
+    
+    private var cameraButton: some View {
+        Menu {
+            Button {
+                handleCameraSelection()
+            } label: {
+                Label("Take Photo", systemImage: "camera")
+            }
+            
+            Button {
+                handlePhotoLibrarySelection()
+            } label: {
+                Label("Choose from Library", systemImage: "photo.on.rectangle")
+            }
+        } label: {
+            Image(systemName: "camera.fill")
+                .font(.system(size: 18, weight: .medium))
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .padding(.horizontal)
+    }
+    
+    private var headersMenu: some View {
+        Menu {
+            Button("H1") { textController.makeHeader(level: 1) }
+            Button("H2") { textController.makeHeader(level: 2) }
+            Button("H3") { textController.makeHeader(level: 3) }
+        } label: {
+            Image(systemName: "textformat.size")
+                .font(.system(size: 18, weight: .medium))
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .padding(.horizontal)
+    }
+    
+    private var mediaPickerView: some View {
+        MediaPicker(
+            selectedImage: $selectedImage,
+            selectedVideoURL: .constant(nil),
+            sourceType: mediaSourceType
+        )
+        .ignoresSafeArea()
+    }
+    
+    // MARK: - Methods
+    
+    private func handleCameraSelection() {
+        isCheckingPermissions = true
+        
+        checkCameraPermission { granted in
+            DispatchQueue.main.async {
+                isCheckingPermissions = false
+                
+                if granted {
+                    mediaSourceType = .camera
+                    // Небольшая задержка для стабильности
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        showMediaPicker = true
+                    }
+                } else {
+                    cameraError = "Camera access is required to take photos. Please enable camera access in Settings to use this feature."
+                    showCameraAlert = true
+                }
+            }
+        }
+    }
+    
+    private func handlePhotoLibrarySelection() {
+        mediaSourceType = .photoLibrary
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            showMediaPicker = true
+        }
+    }
+    
+    private func checkCameraPermission(completion: @escaping (Bool) -> Void) {
+        let status = AVCaptureDevice.authorizationStatus(for: .video)
+        
+        switch status {
+        case .authorized:
+            completion(true)
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { granted in
+                completion(granted)
+            }
+        case .denied, .restricted:
+            completion(false)
+        @unknown default:
+            completion(false)
+        }
+    }
+    
+    private func openAppSettings() {
+        if let url = URL(string: UIApplication.openSettingsURLString) {
+            UIApplication.shared.open(url)
+        }
+    }
+    
+    private func handleSelectedImage(_ newImage: UIImage?) {
+        guard let image = newImage, let noteId = note.id else { return }
+        
+        textController.insertImage(image, noteId: noteId) { fileName in
+            if let fileName = fileName {
+                updatePhotoPath(with: fileName)
                 saveNote()
             }
+            selectedImage = nil
+        }
+    }
+    
+    private func updatePhotoPath(with newFileName: String) {
+        if let existingPath = note.photoPath, !existingPath.isEmpty {
+            note.photoPath = existingPath + "," + newFileName
+        } else {
+            note.photoPath = newFileName
+        }
+    }
+    
+    private func setupNote() {
+        editedTitle = note.title ?? ""
+        
+        if let data = note.textData,
+           let attributed = try? NSKeyedUnarchiver.unarchivedObject(ofClass: NSAttributedString.self, from: data) {
+            editedText = attributed
+        } else {
+            editedText = NSAttributedString(string: note.text ?? "")
+        }
+        
+        restoreMediaInText()
+        
+        if startEditing {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                isEditorFocused = true
+            }
+        }
+        
+        textController.onTextChange = { newText in
+            self.editedText = newText
+        }
+    }
+    
+    private func restoreMediaInText() {
+        guard let noteId = note.id else { return }
+        
+        if let photoPath = note.photoPath {
+            let mediaFiles = photoPath.components(separatedBy: ",")
+            for fileName in mediaFiles {
+                let trimmedFileName = fileName.trimmingCharacters(in: .whitespaces)
+                if !trimmedFileName.isEmpty, let image = MediaManager.shared.loadImage(named: trimmedFileName) {
+                    textController.insertImage(image, noteId: noteId) { _ in }
+                }
+            }
+        }
+    }
+    
+    private func handleDisappear() {
+        if editedTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            editedText.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            MediaManager.shared.cleanupMedia(for: note)
+            viewContext.delete(note)
+            try? viewContext.save()
+        } else {
+            saveNote()
         }
     }
     
     private func saveNote() {
         note.title = editedTitle
         note.text = editedText.string
+        note.createdAt = Date()
         
-        if let data = try? NSKeyedArchiver.archivedData(withRootObject: editedText,
-                                                        requiringSecureCoding: false) {
+        if let data = try? NSKeyedArchiver.archivedData(withRootObject: editedText, requiringSecureCoding: false) {
             note.textData = data
         }
         
         do {
             try viewContext.save()
-            print("Note saved with attributed data")
         } catch {
             print("Failed to save: \(error.localizedDescription)")
         }
@@ -124,7 +307,8 @@ struct FormatButton: View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.system(size: 18, weight: .medium))
-                .padding(6)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
         }
     }
 }
@@ -145,7 +329,11 @@ struct VisualEffectView: UIViewRepresentable {
 #Preview {
     let context = PersistenceController.preview.container.viewContext
     let note = Note(context: context)
-    note.title = ""
-    note.text = ""
-    return NavigationView { NoteDetailView(note: note, startEditing: true) }
+    note.title = "Test Note"
+    note.text = "Test content"
+    note.id = UUID()
+    return NavigationView {
+        NoteDetailView(note: note, startEditing: true)
+            .environment(\.managedObjectContext, context)
+    }
 }

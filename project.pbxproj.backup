@@ -10,22 +10,9 @@
 		A2E40B552E860A2A00D1A359 /* NoteHub.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NoteHub.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
-/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		A2F70DB02E87EC0000741327 /* Exceptions for "NoteHub" folder in "NoteHub" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				Info.plist,
-			);
-			target = A2E40B542E860A2A00D1A359 /* NoteHub */;
-		};
-/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
-
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		A2E40B572E860A2A00D1A359 /* NoteHub */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				A2F70DB02E87EC0000741327 /* Exceptions for "NoteHub" folder in "NoteHub" target */,
-			);
 			path = NoteHub;
 			sourceTree = "<group>";
 		};
@@ -47,7 +34,6 @@
 				A2E40B562E860A2A00D1A359 /* Products */,
 			);
 			sourceTree = "<group>";
-			tabWidth = 4;
 		};
 		A2E40B562E860A2A00D1A359 /* Products */ = {
 			isa = PBXGroup;
@@ -257,6 +243,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = WP4JZBU755;
 				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = NoteHub/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.education";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -289,6 +276,8 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = WP4JZBU755;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = NoteHub/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.education";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;

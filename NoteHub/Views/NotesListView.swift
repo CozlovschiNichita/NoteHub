@@ -3,25 +3,48 @@ import CoreData
 
 struct NotesListView: View {
     @Environment(\.managedObjectContext) private var viewContext
-    @FetchRequest(sortDescriptors: [NSSortDescriptor(keyPath: \Note.createdAt, ascending: false)], animation: .default)
+    @FetchRequest(
+        sortDescriptors: [NSSortDescriptor(keyPath: \Note.createdAt, ascending: false)],
+        animation: .default
+    )
     private var notes: FetchedResults<Note>
 
-    // Для программной навигации к новой заметке
-    @State private var isShowingNewNote: Bool = false
-    @State private var newNoteID: NSManagedObjectID?
+    @State private var selectedNote: Note?
+    @State private var showingNewNote = false
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             List {
                 ForEach(notes) { note in
-                    NavigationLink {
-                        // Открываем экран заметки как раньше (редактируем сразу)
-                        NoteDetailView(note: note, startEditing: false)
-                    } label: {
-                        Text(note.title ?? "Untitled")
+                    NavigationLink(value: note) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(note.title?.isEmpty == false ? note.title! : "Untitled")
+                                .font(.headline)
+                                .lineLimit(1)
+                            
+                            Text(note.text?.isEmpty == false ? note.text! : "No content")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                                .lineLimit(2)
+                            
+                            if let date = note.createdAt {
+                                Text(formatDate(date))
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        .padding(.vertical, 4)
                     }
                 }
                 .onDelete(perform: deleteNotes)
+            }
+            .navigationDestination(for: Note.self) { note in
+                NoteDetailView(note: note, startEditing: false)
+            }
+            .navigationDestination(isPresented: $showingNewNote) {
+                if let newNote = selectedNote {
+                    NoteDetailView(note: newNote, startEditing: true)
+                }
             }
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -31,23 +54,6 @@ struct NotesListView: View {
                 }
             }
             .navigationTitle("Notes")
-            // Скрытая навигация для новой заметки (созданной программно)
-            .background(
-                NavigationLink(
-                    destination: Group {
-                        if let id = newNoteID,
-                           let created = try? viewContext.existingObject(with: id) as? Note {
-                            NoteDetailView(note: created, startEditing: true)
-                        } else {
-                            EmptyView()
-                        }
-                    },
-                    isActive: $isShowingNewNote
-                ) {
-                    EmptyView()
-                }
-                .hidden()
-            )
         }
     }
 
@@ -56,14 +62,18 @@ struct NotesListView: View {
             let newNote = Note(context: viewContext)
             newNote.id = UUID()
             newNote.createdAt = Date()
-            newNote.title = ""      // пустой заголовок по умолчанию
-            newNote.text = ""       // пустой текст
+            newNote.title = ""
+            newNote.text = ""
+            newNote.textData = try? NSKeyedArchiver.archivedData(
+                withRootObject: NSAttributedString(string: ""),
+                requiringSecureCoding: false
+            )
+            
             do {
                 try viewContext.save()
-                // сохранили — теперь откроем эту заметку в режиме редактирования
-                newNoteID = newNote.objectID
-                isShowingNewNote = true
-                print("Note added and saved successfully")
+                selectedNote = newNote
+                showingNewNote = true
+                print("Note added successfully")
             } catch {
                 print("Failed to add note: \(error.localizedDescription)")
             }
@@ -72,13 +82,32 @@ struct NotesListView: View {
 
     private func deleteNotes(offsets: IndexSet) {
         withAnimation {
-            offsets.map { notes[$0] }.forEach(viewContext.delete)
+            offsets.map { notes[$0] }.forEach { note in
+                MediaManager.shared.cleanupMedia(for: note)
+                viewContext.delete(note)
+            }
+            
             do {
                 try viewContext.save()
-                print("Note deleted successfully")
+                print("Notes deleted successfully")
             } catch {
-                print("Failed to delete note: \(error.localizedDescription)")
+                print("Failed to delete notes: \(error.localizedDescription)")
             }
+        }
+    }
+    
+    private func formatDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        if Calendar.current.isDateInToday(date) {
+            formatter.timeStyle = .short
+            formatter.dateStyle = .none
+            return formatter.string(from: date)
+        } else if Calendar.current.isDateInYesterday(date) {
+            return "Yesterday"
+        } else {
+            formatter.dateStyle = .medium
+            formatter.timeStyle = .none
+            return formatter.string(from: date)
         }
     }
 }

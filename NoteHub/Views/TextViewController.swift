@@ -1,5 +1,6 @@
 import UIKit
 import Combine
+import AVFoundation
 
 // MARK: - TextViewController
 final class TextViewController: ObservableObject {
@@ -94,5 +95,75 @@ final class TextViewController: ObservableObject {
             tv.typingAttributes[.font] = headerFont
             onTextChange?(tv.attributedText)
         }
+    }
+}
+
+// MARK: - Media Extension
+extension TextViewController {
+    func insertImage(_ image: UIImage, noteId: UUID, completion: @escaping (String?) -> Void) {
+        guard let textView = textView else {
+            completion(nil)
+            return
+        }
+        
+        // Сохраняем изображение в файловой системе
+        guard let fileName = MediaManager.shared.saveImage(image, for: noteId) else {
+            completion(nil)
+            return
+        }
+        
+        // Создаем NSTextAttachment с изображением
+        let attachment = NSTextAttachment()
+        attachment.image = image.scaled(toWidth: textView.frame.width - 20)
+        
+        // Добавляем идентификатор файла как атрибут
+        let attributedString = NSMutableAttributedString(attributedString: NSAttributedString(attachment: attachment))
+        attributedString.addAttribute(.link, value: "media://\(fileName)", range: NSRange(location: 0, length: attributedString.length))
+        
+        // Добавляем перенос строки
+        attributedString.append(NSAttributedString(string: "\n\n"))
+        
+        // Вставляем в текст
+        let range = textView.selectedRange
+        let mutableText = NSMutableAttributedString(attributedString: textView.attributedText ?? NSAttributedString(string: ""))
+        mutableText.insert(attributedString, at: range.location)
+        
+        textView.attributedText = mutableText
+        textView.selectedRange = NSRange(location: range.location + attributedString.length, length: 0)
+        
+        onTextChange?(mutableText)
+        completion(fileName)
+    }
+    
+    // Метод для извлечения медиа из текста
+    func extractMediaFromText(_ attributedText: NSAttributedString) -> [String] {
+        var mediaFiles: [String] = []
+        
+        attributedText.enumerateAttribute(.link, in: NSRange(location: 0, length: attributedText.length)) { value, range, _ in
+            if let link = value as? String, link.hasPrefix("media://") {
+                let fileName = link.replacingOccurrences(of: "media://", with: "")
+                mediaFiles.append(fileName)
+            }
+        }
+        
+        return mediaFiles
+    }
+}
+
+// MARK: - Image Scaling Extension
+extension UIImage {
+    func scaled(toWidth width: CGFloat) -> UIImage? {
+        let oldWidth = self.size.width
+        let scaleFactor = width / oldWidth
+        
+        let newHeight = self.size.height * scaleFactor
+        let newWidth = oldWidth * scaleFactor
+        
+        UIGraphicsBeginImageContext(CGSize(width: newWidth, height: newHeight))
+        self.draw(in: CGRect(x: 0, y: 0, width: newWidth, height: newHeight))
+        let newImage = UIGraphicsGetImageFromCurrentImageContext()
+        UIGraphicsEndImageContext()
+        
+        return newImage
     }
 }
