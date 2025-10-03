@@ -6,7 +6,12 @@
 	objectVersion = 90;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		A2CF657A2E8FBA0B009A25CC /* Note+CoreDataProperties.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2CF65792E8FBA0B009A25CC /* Note+CoreDataProperties.swift */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
+		A2CF65792E8FBA0B009A25CC /* Note+CoreDataProperties.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = "Note+CoreDataProperties.swift"; path = "NoteHub/Models/Note+CoreDataProperties.swift"; sourceTree = "<group>"; };
 		A2E40B552E860A2A00D1A359 /* NoteHub.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NoteHub.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -43,6 +48,7 @@
 		A2E40B4C2E860A2A00D1A359 = {
 			isa = PBXGroup;
 			children = (
+				A2CF65792E8FBA0B009A25CC /* Note+CoreDataProperties.swift */,
 				A2E40B572E860A2A00D1A359 /* NoteHub */,
 				A2E40B562E860A2A00D1A359 /* Products */,
 			);
@@ -124,6 +130,7 @@
 		A2E40B512E860A2A00D1A359 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			files = (
+				A2CF657A2E8FBA0B009A25CC /* Note+CoreDataProperties.swift in Sources */,
 			);
 		};
 /* End PBXSourcesBuildPhase section */
