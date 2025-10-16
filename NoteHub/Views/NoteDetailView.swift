@@ -29,7 +29,7 @@ struct NoteDetailView: View {
 
     // Measured width of the editor content area (to avoid UIScreen.main)
     @State private var editorContentWidth: CGFloat = 0
-    
+
     @State private var isSavingImage: Bool = false
 
     // Formatting sheet
@@ -39,31 +39,25 @@ struct NoteDetailView: View {
     @State private var wantUnderline = false
     @State private var headerLevel: Int = 0 // 0 = none, 1..3 = H1..H3
 
+    // Bottom bar height for insetting the editor
+    @State private var bottomBarHeight: CGFloat = 0
+
+    // Дебаунсер для сохранения заметки
+    @State private var saveTask: Task<Void, Never>? = nil
+
     var startEditing: Bool = false
 
     var body: some View {
         ZStack(alignment: .bottom) {
             VStack(spacing: 0) {
-                // Навбар с Back
-                HStack {
-                    Button {
-                        handleDisappear()
-                        dismiss()
-                    } label: {
-                        Image(systemName: "chevron.backward")
-                            .font(.headline)
-                    }
-                    .padding(.leading, 12)
-
-                    Spacer()
-                }
-                .padding(.vertical, 6)
-
                 // Заголовок
                 TextField("Title", text: $editedTitle)
                     .font(.title)
                     .padding(.horizontal)
                     .padding(.top, 2)
+                    .onChange(of: editedTitle) { _ in
+                        debouncedSaveNote()
+                    }
 
                 Divider()
 
@@ -71,7 +65,8 @@ struct NoteDetailView: View {
                 FormattedTextView(
                     attributedText: $editedText,
                     isFirstResponder: $isEditorFocused,
-                    controller: textController
+                    controller: textController,
+                    bottomContentInset: bottomBarHeight + 12 // keep last line above the panel
                 )
                 .padding(.horizontal)
                 .frame(maxHeight: .infinity)
@@ -95,19 +90,9 @@ struct NoteDetailView: View {
             .onChange(of: selectedImage) { _, newValue in
                 handleSelectedImage(newValue)
             }
-            .onChange(of: editedText) {
-                saveNote()
-            }
-            .onChange(of: editedTitle) {
-                saveNote()
-            }
-            // If the editor width changes (rotation, split view), re-size restored thumbnails
-            .onChange(of: editorContentWidth) { _, newWidth in
-                guard newWidth > 0 else { return }
-                DispatchQueue.global(qos: .userInitiated).async {
-                    restoreMediaInText(using: newWidth)
-                }
-            }
+            // .onChange(of: editedText) — УБИРАЕМ, не хотим @State обновлять каждый символ
+            // .onChange(of: editorContentWidth) — УБИРАЕМ вызов restoreMediaInText
+
             .alert("Camera Access Required", isPresented: $showCameraAlert) {
                 Button("Settings") { openAppSettings() }
                 Button("Cancel", role: .cancel) { }
@@ -128,9 +113,20 @@ struct NoteDetailView: View {
                 setupNote()
 
                 // Когда UITextView меняет текст — синхронизируем и сохраняем
-                textController.onTextChange = { newText in
-                    self.editedText = newText
-                    // не вызываем saveNote() строго тут — onChange(of: editedText) уже вызовёт его
+                textController.onTextChange = { [weak textController] newText, event in
+                    // Не заменяем attributedText на каждое изменение при наборе или вставке медиа,
+                    // чтобы не вызывать пересоздание текста и скачки прокрутки.
+                    switch event {
+                    case .userFinishedEditing:
+                        self.editedText = newText
+                        debouncedSaveNote()
+                    case .mediaInserted:
+                        // НЕ присваиваем editedText здесь — UITextView уже содержит правильный текст.
+                        // Просто сохраняем.
+                        debouncedSaveNote()
+                    case .other:
+                        break
+                    }
                 }
 
                 // Когда пользователь тапает по картинке — открываем оригинал
@@ -147,6 +143,15 @@ struct NoteDetailView: View {
 
             // Bottom bar: Undo | Add Photo | Format | Redo
             bottomBar
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear
+                            .onAppear { bottomBarHeight = proxy.size.height }
+                            .onChange(of: proxy.size) { _, newSize in
+                                bottomBarHeight = newSize.height
+                            }
+                    }
+                )
 
             // Fullscreen preview with pinch-to-zoom
             if isShowingFullImage, let image = fullImage {
@@ -165,11 +170,11 @@ struct NoteDetailView: View {
                         }
                     }
                     .padding(.top, 8)
-                    
+
                     // Zoomable image that initially fits the screen and supports pinch and double-tap
                     ZoomableImageView(image: image)
                         .ignoresSafeArea()
-                    
+
                     Spacer(minLength: 0)
                 }
                 .transition(.opacity)
@@ -391,6 +396,9 @@ struct NoteDetailView: View {
 
                 isSavingImage = false
                 selectedImage = nil
+
+                // Не переустанавливаем editedText здесь — это вызовет пересоздание текста и скачок.
+                // Сохранение произойдёт через debouncedSaveNote() в onTextChange(.mediaInserted)
             }
         }
     }
@@ -401,15 +409,12 @@ struct NoteDetailView: View {
 
         if let data = note.textData,
            let attributed = try? NSKeyedUnarchiver.unarchivedObject(ofClass: NSAttributedString.self, from: data) {
-            // Если saved textData — это уже "санитизированная" версия (без вложенных image attachments),
-            // то используем её как базу и затем заменим placeholders на реальные thumbnails.
             editedText = attributed
         } else {
-            // fallback: у старых заметок мог быть только plain text
             editedText = NSAttributedString(string: note.text ?? "")
         }
 
-        // Asynchronously restore thumbnails into the editor (so UI doesn't block)
+        // restoreMediaInText только тут! (НЕ дергать на каждое изменение ширины)
         let widthSnapshot = self.editorContentWidth
         DispatchQueue.global(qos: .userInitiated).async {
             restoreMediaInText(using: widthSnapshot)
@@ -424,16 +429,13 @@ struct NoteDetailView: View {
 
     /// Восстанавливает thumbnails в тексте (заменяет placeholder c .link = "media://file" на реальный NSTextAttachment -> thumbnail)
     private func restoreMediaInText(using containerWidth: CGFloat? = nil) {
-        // Берём текущую "санитизированную" версию
         let base = NSMutableAttributedString(attributedString: editedText)
 
-        // Собираем все ranges с .link "media://..."
         let fullRange = NSRange(location: 0, length: base.length)
         var pairs: [(range: NSRange, fileName: String)] = []
 
         base.enumerateAttribute(.link, in: fullRange, options: []) { value, range, _ in
             if let s = value as? String, s.hasPrefix("media://") {
-                // Безопасность: работаем только с placeholder-символом
                 let substring = base.attributedSubstring(from: range).string
                 if substring == "\u{FFFC}" {
                     let file = s.replacingOccurrences(of: "media://", with: "")
@@ -442,59 +444,51 @@ struct NoteDetailView: View {
             }
         }
 
-        // Если нет placeholder'ов — ничего не делаем
         if pairs.isEmpty {
             DispatchQueue.main.async {
-                self.textController.onTextChange?(base) // синхронизируем
+                if let tv = self.textController.textView {
+                    tv.attributedText = base
+                }
                 self.editedText = base
             }
             return
         }
 
-        // Use measured editor width if available; otherwise a reasonable fallback
         let measuredWidth = containerWidth ?? self.editorContentWidth
-        let containerW = measuredWidth > 0 ? measuredWidth : 400 // fallback if not yet measured
+        let containerW = measuredWidth > 0 ? measuredWidth : 400
 
-        // Проходим с конца (чтобы не ломать индексы при замене)
         for pair in pairs.reversed() {
             let fileName = pair.fileName
-            // Подгружаем thumbnail (кеш/диск)
             if let thumb = MediaManager.shared.loadThumbnail(named: fileName) {
-                // Собираем аттрибутированный блок с thumbnail и атрибутом .link, затем заменяем placeholder
-                let attachment = NSTextAttachment()
+                let attachment = MediaAttachment()
+                attachment.fileName = fileName
                 attachment.image = thumb
 
                 let ratio = thumb.size.width / thumb.size.height
-                let newWidth = min(max(containerW - 40, 0), thumb.size.width) // width minus horizontal padding
+                let newWidth = min(max(containerW - 40, 0), thumb.size.width)
                 let newHeight = newWidth / max(ratio, 0.0001)
                 attachment.bounds = CGRect(x: 0, y: 0, width: newWidth, height: newHeight)
 
                 let imageString = NSMutableAttributedString(attachment: attachment)
-                // Пометим attachment ссылкой на оригинал — это нужно для обработки тапов
                 imageString.addAttribute(.link, value: "media://\(fileName)", range: NSRange(location: 0, length: imageString.length))
-                // Добавим перенос после картинки (удобно)
-                imageString.append(NSAttributedString(string: "\n"))
+                imageString.append(NSAttributedString(string: "\n\n"))
 
-                // Заменяем placeholder-диапазон на imageString
                 base.replaceCharacters(in: pair.range, with: imageString)
             } else {
-                // Если thumbnail не найден — просто удаляем placeholder (или можно оставить текст)
                 base.replaceCharacters(in: pair.range, with: NSAttributedString(string: ""))
             }
         }
 
-        // Обновляем UI на основном потоке единожды
         DispatchQueue.main.async {
-            // Устанавливаем в UITextView напрямую (через controller.textView если доступно) или через editedText binding
+            if let tv = self.textController.textView {
+                tv.attributedText = base
+            }
             self.editedText = base
-            self.textController.onTextChange?(base)
         }
     }
 
-    // Удаляем пустую заметку или сохраняем (с санитизацией вложений)
     private func handleDisappear() {
         guard !isSavingImage else {
-            // откладываем сохранение/выход до завершения вставки
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 handleDisappear()
             }
@@ -507,24 +501,21 @@ struct NoteDetailView: View {
             viewContext.delete(note)
             try? viewContext.save()
         } else {
-            saveNote()
+            saveTask?.cancel()
+            saveNote() // Финальное принудительное сохранение
         }
     }
 
-    // Когда сохраняем — нужно **санитизировать** editedText (удалить фактические image attachments),
+    @MainActor
     private func saveNote() {
         let trimmedTitle = editedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         note.title = trimmedTitle.isEmpty ? "New note" : trimmedTitle
         note.text = editedText.string
         note.createdAt = Date()
-
-        // Подготовим sanitized copy (удаляем attachment, но сохраняем link)
         let sanitized = sanitizedAttributedForSaving(from: editedText)
-
         if let data = try? NSKeyedArchiver.archivedData(withRootObject: sanitized, requiringSecureCoding: false) {
             note.textData = data
         }
-
         do {
             try viewContext.save()
         } catch {
@@ -532,15 +523,19 @@ struct NoteDetailView: View {
         }
     }
 
-    /// Санитизируем текст для сохранения:
-    /// 1) Заменяем все вложения (attachments) на один placeholder-символ с атрибутом .link="media://file"
-    /// 2) Нормализуем любые диапазоны с .link "media://" (если такие оказались на тексте) в один placeholder-символ,
-    ///    чтобы при восстановлении не "съедать" пользовательский текст.
+    /// Дебаунсер сохранения (0.7 сек после последнего действия)
+    private func debouncedSaveNote() {
+        saveTask?.cancel()
+        saveTask = Task {
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            await saveNote()
+        }
+    }
+
     private func sanitizedAttributedForSaving(from attr: NSAttributedString) -> NSAttributedString {
         let mutable = NSMutableAttributedString(attributedString: attr)
         let placeholderChar = "\u{FFFC}"
 
-        // 1) Заменяем attachments на placeholder с link
         var attachmentRanges: [NSRange] = []
         mutable.enumerateAttribute(.attachment, in: NSRange(location: 0, length: mutable.length), options: []) { value, range, _ in
             if value != nil {
@@ -548,13 +543,16 @@ struct NoteDetailView: View {
             }
         }
         for range in attachmentRanges.reversed() {
-            let linkValue = (mutable.attribute(.link, at: range.location, effectiveRange: nil) as? String)
+            var finalLink = (mutable.attribute(.link, at: range.location, effectiveRange: nil) as? String)
+            if finalLink == nil,
+               let att = mutable.attribute(.attachment, at: range.location, effectiveRange: nil) as? MediaAttachment,
+               let file = att.fileName {
+                finalLink = "media://\(file)"
+            }
             let placeholder = NSMutableAttributedString(string: placeholderChar)
-
-            if let link = linkValue {
+            if let link = finalLink {
                 placeholder.addAttribute(.link, value: link, range: NSRange(location: 0, length: placeholder.length))
             }
-
             if range.location < mutable.length {
                 let attrs = mutable.attributes(at: range.location, effectiveRange: nil)
                 for (k, v) in attrs {
@@ -563,11 +561,9 @@ struct NoteDetailView: View {
                     }
                 }
             }
-
             mutable.replaceCharacters(in: range, with: placeholder)
         }
 
-        // 2) Нормализуем любые "media://" ссылки (если утекли на обычный текст) -> один placeholder-символ
         var mediaLinkRanges: [(NSRange, String)] = []
         mutable.enumerateAttribute(.link, in: NSRange(location: 0, length: mutable.length), options: []) { value, range, _ in
             if let s = value as? String, s.hasPrefix("media://") {
@@ -575,13 +571,10 @@ struct NoteDetailView: View {
             }
         }
         for (range, link) in mediaLinkRanges.reversed() {
-            // Если уже один placeholder — пропускаем
             let substring = mutable.attributedSubstring(from: range).string
             if substring == placeholderChar && range.length == 1 { continue }
-
             let placeholder = NSMutableAttributedString(string: placeholderChar)
             placeholder.addAttribute(.link, value: link, range: NSRange(location: 0, length: 1))
-
             if range.location < mutable.length {
                 let attrs = mutable.attributes(at: range.location, effectiveRange: nil)
                 for (k, v) in attrs {
@@ -590,10 +583,10 @@ struct NoteDetailView: View {
                     }
                 }
             }
-
             mutable.replaceCharacters(in: range, with: placeholder)
         }
 
         return mutable
     }
 }
+

@@ -7,7 +7,7 @@ struct FormattedTextView: UIViewRepresentable {
     @Binding var isFirstResponder: Bool
     var controller: TextViewController
 
-    // Choose a larger default font for typing and for ranges missing a font
+    var bottomContentInset: CGFloat = 0
     private let defaultFont = UIFont.systemFont(ofSize: 18)
 
     func makeUIView(context: Context) -> UITextView {
@@ -23,34 +23,57 @@ struct FormattedTextView: UIViewRepresentable {
         tv.adjustsFontForContentSizeCategory = true
         tv.isScrollEnabled = true
 
-        // Default typing font and ensure no link leaks into typing
+        tv.textColor = .label
         tv.typingAttributes[.font] = defaultFont
+        tv.typingAttributes[.foregroundColor] = UIColor.label
+        tv.typingAttributes[.paragraphStyle] = AttachmentParagraphStyle.body(for: defaultFont)
         tv.typingAttributes.removeValue(forKey: .link)
 
-        // Apply default font to any ranges that lack an explicit font
-        tv.attributedText = applyDefaultFontIfMissing(to: attributedText, defaultFont: defaultFont)
+        let initial = applyDefaultFontIfMissing(to: attributedText, defaultFont: defaultFont)
+        let normalized = enforceStableParagraphStyles(on: initial)
 
-        // Сохраняем ссылку в контроллере
+        // Mark this as an external application to avoid triggering a jump later
+        context.coordinator.isApplyingExternalText = true
+        tv.attributedText = normalized
+
+        tv.contentInset.bottom = max(tv.contentInset.bottom, bottomContentInset)
+        tv.verticalScrollIndicatorInsets.bottom = max(tv.verticalScrollIndicatorInsets.bottom, bottomContentInset)
+
         controller.textView = tv
-
         return tv
     }
 
     func updateUIView(_ uiView: UITextView, context: Context) {
-        // Keep typing clean of .link; DO NOT overwrite .font here so user-chosen typing styles persist
+        uiView.typingAttributes[.foregroundColor] = UIColor.label
+        uiView.typingAttributes[.font] = defaultFont
+        uiView.typingAttributes[.paragraphStyle] = AttachmentParagraphStyle.body(for: defaultFont)
         uiView.typingAttributes.removeValue(forKey: .link)
 
-        // Only update if changed; also apply default font to ranges missing it
-        if uiView.attributedText != attributedText {
-            let previous = uiView.selectedRange
-            let newText = applyDefaultFontIfMissing(to: attributedText, defaultFont: defaultFont)
-            uiView.attributedText = newText
-            // Clamp selection to the new text length to avoid crashes
-            let length = newText.length
-            let loc = max(0, min(previous.location, length))
-            let maxLen = max(0, length - loc)
-            let len = max(0, min(previous.length, maxLen))
-            uiView.selectedRange = NSRange(location: loc, length: len)
+        if abs(uiView.contentInset.bottom - bottomContentInset) > 0.5 {
+            uiView.contentInset.bottom = bottomContentInset
+            uiView.verticalScrollIndicatorInsets.bottom = bottomContentInset
+        }
+
+        // Only apply from SwiftUI on safe/external updates.
+        // Avoid replacing attributedText while user is actively typing (first responder) unless explicitly marked.
+        if context.coordinator.isApplyingExternalText || !uiView.isFirstResponder {
+            if uiView.attributedText != attributedText {
+                let previous = uiView.selectedRange
+                let withFont = applyDefaultFontIfMissing(to: attributedText, defaultFont: defaultFont)
+                let normalized = enforceStableParagraphStyles(on: withFont)
+
+                context.coordinator.shouldIgnoreNextTextChange = true
+                UIView.performWithoutAnimation {
+                    uiView.attributedText = normalized
+                    let length = normalized.length
+                    let loc = max(0, min(previous.location, length))
+                    let maxLen = max(0, length - loc)
+                    let len = max(0, min(previous.length, maxLen))
+                    uiView.selectedRange = NSRange(location: loc, length: len)
+                }
+            }
+            // Reset the external flag after applying
+            context.coordinator.isApplyingExternalText = false
         }
 
         if isFirstResponder && !uiView.isFirstResponder {
@@ -64,7 +87,7 @@ struct FormattedTextView: UIViewRepresentable {
         Coordinator(self)
     }
 
-    // Apply default font to ranges that do not specify .font
+    // MARK: - Helpers
     private func applyDefaultFontIfMissing(to attr: NSAttributedString, defaultFont: UIFont) -> NSAttributedString {
         guard attr.length > 0 else { return attr }
         let mutable = NSMutableAttributedString(attributedString: attr)
@@ -77,42 +100,80 @@ struct FormattedTextView: UIViewRepresentable {
         return mutable
     }
 
-    // Coordinator — делегат UITextView
+    private func enforceStableParagraphStyles(on attr: NSAttributedString) -> NSAttributedString {
+        guard attr.length > 0 else { return attr }
+        let mutable = NSMutableAttributedString(attributedString: attr)
+        let full = NSRange(location: 0, length: mutable.length)
+        
+        // Remove old colors and apply stable paragraph styles
+        mutable.removeAttribute(.foregroundColor, range: full)
+        mutable.addAttribute(.foregroundColor, value: UIColor.label, range: full)
+        
+        // Ensure consistent paragraph styles
+        let string = mutable.string as NSString
+        var position = 0
+        while position < mutable.length {
+            let paragraphRange = string.paragraphRange(for: NSRange(location: position, length: 0))
+            let hasAttachment = mutable.attribute(.attachment, at: paragraphRange.location, effectiveRange: nil) != nil
+            
+            let style = hasAttachment ?
+                AttachmentParagraphStyle.make(for: defaultFont) :
+                AttachmentParagraphStyle.body(for: defaultFont)
+            
+            mutable.addAttribute(.paragraphStyle, value: style, range: paragraphRange)
+            position = paragraphRange.location + paragraphRange.length
+        }
+        
+        return mutable
+    }
+
+    // MARK: - Coordinator
     class Coordinator: NSObject, UITextViewDelegate {
         var parent: FormattedTextView
+        private var pendingTextUpdateWorkItem: DispatchWorkItem?
+        var isApplyingExternalText: Bool = false
+        var shouldIgnoreNextTextChange: Bool = false
+
         init(_ parent: FormattedTextView) { self.parent = parent }
 
-        // Prevent .link from leaking into inserted text
         func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
-            // Ensure typingAttributes has no .link before insertion
+            // Always update typing attributes before changes
+            textView.typingAttributes[.foregroundColor] = UIColor.label
+            textView.typingAttributes[.font] = parent.defaultFont
+            textView.typingAttributes[.paragraphStyle] = AttachmentParagraphStyle.body(for: parent.defaultFont)
             textView.typingAttributes.removeValue(forKey: .link)
-
-            // After insertion, strip any .link that may have been applied to the inserted text
-            let insertLen = (text as NSString).length
-            if insertLen > 0 {
-                DispatchQueue.main.async { [weak self, weak textView] in
-                    guard let tv = textView else { return }
-                    let safeLocation = min(range.location, max(0, tv.attributedText.length - insertLen))
-                    let affectedRange = NSRange(location: safeLocation, length: min(insertLen, max(0, tv.attributedText.length - safeLocation)))
-                    if affectedRange.length > 0 && NSMaxRange(affectedRange) <= tv.attributedText.length {
-                        tv.textStorage.removeAttribute(.link, range: affectedRange)
-                        self?.parent.controller.onTextChange?(tv.attributedText)
-                    }
-                }
-            }
+            
             return true
         }
 
         func textViewDidChange(_ textView: UITextView) {
-            // Also make sure typingAttributes stays clean
-            textView.typingAttributes.removeValue(forKey: .link)
-            DispatchQueue.main.async {
-                self.parent.attributedText = textView.attributedText ?? NSAttributedString(string: "")
+            guard !shouldIgnoreNextTextChange else {
+                shouldIgnoreNextTextChange = false
+                return
             }
+            
+            // Maintain stable attributes
+            textView.typingAttributes[.foregroundColor] = UIColor.label
+            textView.typingAttributes[.font] = parent.defaultFont
+            textView.typingAttributes[.paragraphStyle] = AttachmentParagraphStyle.body(for: parent.defaultFont)
+            textView.typingAttributes.removeValue(forKey: .link)
+
+            // Debounce pushing to SwiftUI
+            pendingTextUpdateWorkItem?.cancel()
+            let workItem = DispatchWorkItem { [weak self, weak textView] in
+                guard let self, let tv = textView else { return }
+                // During typing, we update the binding so saveNote can persist, but updateUIView will not reapply it while first responder.
+                self.parent.attributedText = tv.attributedText
+                self.parent.controller.onTextChange?(tv.attributedText, .other)
+            }
+            pendingTextUpdateWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: workItem)
         }
 
         func textViewDidBeginEditing(_ textView: UITextView) {
-            // Keep typing attributes clean on focus
+            textView.typingAttributes[.foregroundColor] = UIColor.label
+            textView.typingAttributes[.font] = parent.defaultFont
+            textView.typingAttributes[.paragraphStyle] = AttachmentParagraphStyle.body(for: parent.defaultFont)
             textView.typingAttributes.removeValue(forKey: .link)
             DispatchQueue.main.async { self.parent.isFirstResponder = true }
         }
@@ -121,18 +182,15 @@ struct FormattedTextView: UIViewRepresentable {
             DispatchQueue.main.async { self.parent.isFirstResponder = false }
         }
 
-        // Intercept taps on links (used for media://file)
-        func textView(_ textView: UITextView, shouldInteractWith URL: URL, in characterRange: NSRange, interaction: UITextItemInteraction) -> Bool {
-            if URL.scheme == "media" {
-                let fileName = URL.absoluteString.replacingOccurrences(of: "media://", with: "")
-                parent.controller.onImageTap?(fileName)
-                return false
-            }
-            return true
+        func textViewDidChangeSelection(_ textView: UITextView) {
+            textView.typingAttributes[.foregroundColor] = UIColor.label
+            textView.typingAttributes[.font] = parent.defaultFont
+            textView.typingAttributes[.paragraphStyle] = AttachmentParagraphStyle.body(for: parent.defaultFont)
+            textView.typingAttributes.removeValue(forKey: .link)
         }
 
-        // Backward-compatible variant for older signatures (iOS < 13)
-        func textView(_ textView: UITextView, shouldInteractWith URL: URL, in characterRange: NSRange) -> Bool {
+        // Media link taps
+        func textView(_ textView: UITextView, shouldInteractWith URL: URL, in characterRange: NSRange, interaction: UITextItemInteraction) -> Bool {
             if URL.scheme == "media" {
                 let fileName = URL.absoluteString.replacingOccurrences(of: "media://", with: "")
                 parent.controller.onImageTap?(fileName)
