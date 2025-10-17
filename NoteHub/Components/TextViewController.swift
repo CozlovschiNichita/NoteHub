@@ -82,12 +82,83 @@ final class TextViewController: ObservableObject {
         return NSRange(location: loc, length: len)
     }
 
-    // MARK: - Formatting
-    func applyFormatting(bold: Bool?, italic: Bool?, underline: Bool?, headerLevel: Int?) {
-        guard let _ = textView else { return }
+    // MARK: - Formatting with explicit states
+    func applyFormatting(bold: Bool, italic: Bool, underline: Bool, headerLevel: Int) {
+        guard let tv = textView else { return }
         recordUndo(beforeChangeWithName: "Format")
-        engine?.applyFormatting(bold: bold, italic: italic, underline: underline, headerLevel: headerLevel)
-        if let t = textView?.attributedText { onTextChange?(t, .other) }
+        
+        print("Applying formatting - bold: \(bold), italic: \(italic), underline: \(underline), header: \(headerLevel)")
+        
+        let targetSize: CGFloat
+        switch headerLevel {
+        case 1: targetSize = 32
+        case 2: targetSize = 28
+        case 3: targetSize = 24
+        case 4: targetSize = 22
+        case 5: targetSize = 20
+        case 6: targetSize = 18
+        default: targetSize = 18
+        }
+        
+        let finalBold = headerLevel > 0 ? true : bold
+        
+        var newFont: UIFont
+        if finalBold && italic {
+            if let descriptor = UIFont.systemFont(ofSize: targetSize).fontDescriptor.withSymbolicTraits([.traitBold, .traitItalic]) {
+                newFont = UIFont(descriptor: descriptor, size: targetSize)
+            } else {
+                newFont = UIFont.boldSystemFont(ofSize: targetSize)
+                if let italicDescriptor = newFont.fontDescriptor.withSymbolicTraits(.traitItalic) {
+                    newFont = UIFont(descriptor: italicDescriptor, size: targetSize)
+                } else {
+                    newFont = UIFont.boldSystemFont(ofSize: targetSize)
+                }
+            }
+        } else if finalBold {
+            newFont = UIFont.boldSystemFont(ofSize: targetSize)
+        } else if italic {
+            newFont = UIFont.italicSystemFont(ofSize: targetSize)
+        } else {
+            newFont = UIFont.systemFont(ofSize: targetSize)
+        }
+        
+        print("New font: \(newFont.fontName), size: \(newFont.pointSize), bold: \(finalBold), italic: \(italic)")
+        
+        let newAttributes: [NSAttributedString.Key: Any] = [
+            .font: newFont,
+            .underlineStyle: underline ? NSUnderlineStyle.single.rawValue : 0,
+            .foregroundColor: UIColor.label
+        ]
+        
+        let selectedRange = tv.selectedRange
+        let offsetBefore = tv.contentOffset
+        let rangeBefore = tv.selectedRange
+        
+        tv.textStorage.beginEditing()  // Batch changes
+        
+        if selectedRange.length > 0 {
+            // In-place update без полной замены
+            tv.textStorage.addAttributes(newAttributes, range: selectedRange)
+        } else {
+            // Для typing: merge, но перезаписать font/underline
+            tv.typingAttributes = tv.typingAttributes.merging(newAttributes) { _, new in new }
+        }
+        
+        // Ensure stable styles (из engine, для предотвращения jumps от paragraph)
+        engine?.ensureStableParagraphStylesAround(location: selectedRange.location)
+        
+        tv.textStorage.endEditing()  // Apply batch
+        
+        // Restore position если jump
+        tv.layoutIfNeeded()
+        tv.setContentOffset(offsetBefore, animated: false)
+        tv.selectedRange = rangeBefore
+        
+        // Обновляем состояние
+        if let t = tv.attributedText {
+            onTextChange?(t, .other)
+        }
+        
         endUndo()
     }
 
@@ -114,6 +185,9 @@ final class TextViewController: ObservableObject {
                 att.bounds = engine.resizeAttachmentBoundsToContainerWidth(for: thumbnail.size)
 
                 engine.insertAttachment(att, link: "media://\(result.original)")
+
+                // Restore font after insertion to prevent small text issue
+                tv.typingAttributes[.font] = self.defaultFont
 
                 if let t = tv.attributedText {
                     self.onTextChange?(t, .mediaInserted)

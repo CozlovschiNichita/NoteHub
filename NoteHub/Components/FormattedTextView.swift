@@ -44,9 +44,20 @@ struct FormattedTextView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: UITextView, context: Context) {
-        uiView.typingAttributes[.foregroundColor] = UIColor.label
-        uiView.typingAttributes[.font] = defaultFont
-        uiView.typingAttributes[.paragraphStyle] = AttachmentParagraphStyle.body(for: defaultFont)
+        // Сохраняем текущие typingAttributes перед обновлением
+        let currentTypingAttributes = uiView.typingAttributes
+        let currentSelectedRange = uiView.selectedRange
+        
+        // Обновляем только если текст действительно изменился
+        if uiView.attributedText != attributedText {
+            uiView.attributedText = attributedText
+        }
+        
+        // Восстанавливаем typingAttributes и выделение
+        uiView.typingAttributes = currentTypingAttributes
+        uiView.selectedRange = currentSelectedRange
+        
+        // Гарантируем чистые typingAttributes
         uiView.typingAttributes.removeValue(forKey: .link)
 
         if abs(uiView.contentInset.bottom - bottomContentInset) > 0.5 {
@@ -139,8 +150,6 @@ struct FormattedTextView: UIViewRepresentable {
         func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
             // Always update typing attributes before changes
             textView.typingAttributes[.foregroundColor] = UIColor.label
-            textView.typingAttributes[.font] = parent.defaultFont
-            textView.typingAttributes[.paragraphStyle] = AttachmentParagraphStyle.body(for: parent.defaultFont)
             textView.typingAttributes.removeValue(forKey: .link)
             
             return true
@@ -152,10 +161,7 @@ struct FormattedTextView: UIViewRepresentable {
                 return
             }
             
-            // Maintain stable attributes
-            textView.typingAttributes[.foregroundColor] = UIColor.label
-            textView.typingAttributes[.font] = parent.defaultFont
-            textView.typingAttributes[.paragraphStyle] = AttachmentParagraphStyle.body(for: parent.defaultFont)
+            // Гарантируем, что вводимый текст не наследует link
             textView.typingAttributes.removeValue(forKey: .link)
 
             // Debounce pushing to SwiftUI
@@ -171,10 +177,9 @@ struct FormattedTextView: UIViewRepresentable {
         }
 
         func textViewDidBeginEditing(_ textView: UITextView) {
-            textView.typingAttributes[.foregroundColor] = UIColor.label
-            textView.typingAttributes[.font] = parent.defaultFont
-            textView.typingAttributes[.paragraphStyle] = AttachmentParagraphStyle.body(for: parent.defaultFont)
+            // Гарантируем чистые typingAttributes при начале редактирования
             textView.typingAttributes.removeValue(forKey: .link)
+            
             DispatchQueue.main.async { self.parent.isFirstResponder = true }
         }
 
@@ -183,13 +188,10 @@ struct FormattedTextView: UIViewRepresentable {
         }
 
         func textViewDidChangeSelection(_ textView: UITextView) {
-            textView.typingAttributes[.foregroundColor] = UIColor.label
-            textView.typingAttributes[.font] = parent.defaultFont
-            textView.typingAttributes[.paragraphStyle] = AttachmentParagraphStyle.body(for: parent.defaultFont)
+            // Гарантируем, что typingAttributes не содержат link при изменении выделения
             textView.typingAttributes.removeValue(forKey: .link)
         }
 
-        // Media link taps
         func textView(_ textView: UITextView, shouldInteractWith URL: URL, in characterRange: NSRange, interaction: UITextItemInteraction) -> Bool {
             if URL.scheme == "media" {
                 let fileName = URL.absoluteString.replacingOccurrences(of: "media://", with: "")

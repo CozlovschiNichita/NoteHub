@@ -2,6 +2,8 @@ import SwiftUI
 import CoreData
 import AVFoundation
 import UIKit
+import Photos
+import PhotosUI
 
 // MARK: - NoteDetailView
 struct NoteDetailView: View {
@@ -27,17 +29,18 @@ struct NoteDetailView: View {
     @State private var isShowingFullImage: Bool = false
     @State private var fullImage: UIImage?
 
-    // Measured width of the editor content area (to avoid UIScreen.main)
+    // Measured width of the editor content area
     @State private var editorContentWidth: CGFloat = 0
-
     @State private var isSavingImage: Bool = false
 
     // Formatting sheet
     @State private var showFormatSheet = false
-    @State private var wantBold = false
-    @State private var wantItalic = false
-    @State private var wantUnderline = false
-    @State private var headerLevel: Int = 0 // 0 = none, 1..3 = H1..H3
+    
+    // Текущие состояния форматирования
+    @State private var currentBold: Bool = false
+    @State private var currentItalic: Bool = false
+    @State private var currentUnderline: Bool = false
+    @State private var currentHeaderLevel: Int = 0
 
     // Bottom bar height for insetting the editor
     @State private var bottomBarHeight: CGFloat = 0
@@ -66,12 +69,11 @@ struct NoteDetailView: View {
                     attributedText: $editedText,
                     isFirstResponder: $isEditorFocused,
                     controller: textController,
-                    bottomContentInset: bottomBarHeight + 12 // keep last line above the panel
+                    bottomContentInset: bottomBarHeight + 12
                 )
                 .padding(.horizontal)
                 .frame(maxHeight: .infinity)
                 .background(Color(UIColor.systemBackground))
-                // Measure available width for image sizing (instead of UIScreen.main)
                 .background(
                     GeometryReader { proxy in
                         Color.clear
@@ -90,9 +92,6 @@ struct NoteDetailView: View {
             .onChange(of: selectedImage) { _, newValue in
                 handleSelectedImage(newValue)
             }
-            // .onChange(of: editedText) — УБИРАЕМ, не хотим @State обновлять каждый символ
-            // .onChange(of: editorContentWidth) — УБИРАЕМ вызов restoreMediaInText
-
             .alert("Camera Access Required", isPresented: $showCameraAlert) {
                 Button("Settings") { openAppSettings() }
                 Button("Cancel", role: .cancel) { }
@@ -109,27 +108,21 @@ struct NoteDetailView: View {
                 }
             }
             .onAppear {
-                // Подготовка note -> editedText и callbacks
                 setupNote()
-
-                // Когда UITextView меняет текст — синхронизируем и сохраняем
+                
                 textController.onTextChange = { [weak textController] newText, event in
-                    // Не заменяем attributedText на каждое изменение при наборе или вставке медиа,
-                    // чтобы не вызывать пересоздание текста и скачки прокрутки.
                     switch event {
                     case .userFinishedEditing:
                         self.editedText = newText
                         debouncedSaveNote()
                     case .mediaInserted:
-                        // НЕ присваиваем editedText здесь — UITextView уже содержит правильный текст.
-                        // Просто сохраняем.
                         debouncedSaveNote()
                     case .other:
-                        break
+                        self.editedText = newText
+                        debouncedSaveNote()
                     }
                 }
 
-                // Когда пользователь тапает по картинке — открываем оригинал
                 textController.onImageTap = { fileName in
                     if let img = MediaManager.shared.loadImage(named: fileName) {
                         self.fullImage = img
@@ -141,7 +134,7 @@ struct NoteDetailView: View {
                 handleDisappear()
             }
 
-            // Bottom bar: Undo | Add Photo | Format | Redo
+            // Bottom bar
             bottomBar
                 .background(
                     GeometryReader { proxy in
@@ -153,7 +146,7 @@ struct NoteDetailView: View {
                     }
                 )
 
-            // Fullscreen preview with pinch-to-zoom
+            // Fullscreen preview
             if isShowingFullImage, let image = fullImage {
                 Color.black.ignoresSafeArea()
                 VStack(spacing: 0) {
@@ -171,7 +164,6 @@ struct NoteDetailView: View {
                     }
                     .padding(.top, 8)
 
-                    // Zoomable image that initially fits the screen and supports pinch and double-tap
                     ZoomableImageView(image: image)
                         .ignoresSafeArea()
 
@@ -184,60 +176,82 @@ struct NoteDetailView: View {
         .sheet(isPresented: $showFormatSheet) {
             NavigationView {
                 Form {
-                    Section(header: Text("Style")) {
-                        Toggle("Bold", isOn: $wantBold)
-                        Toggle("Italic", isOn: $wantItalic)
-                        Toggle("Underline", isOn: $wantUnderline)
+                    Section(header: Text("Стиль текста")) {
+                        Toggle("Жирный", isOn: $currentBold)
+                            .onChange(of: currentBold) { newValue in
+                                if !newValue && currentHeaderLevel > 0 {
+                                    currentHeaderLevel = 0
+                                }
+                            }
+                        Toggle("Курсив", isOn: $currentItalic)
+                        Toggle("Подчеркивание", isOn: $currentUnderline)
                     }
-                    Section(header: Text("Header")) {
-                        Picker("Level", selection: $headerLevel) {
-                            Text("None").tag(0)
-                            Text("H1").tag(1)
-                            Text("H2").tag(2)
-                            Text("H3").tag(3)
+                    Section(header: Text("Заголовок")) {
+                        Picker("Уровень", selection: $currentHeaderLevel) {
+                            Text("Основной текст").tag(0)
+                            Text("Заголовок H1").tag(1)
+                            Text("Заголовок H2").tag(2)
+                            Text("Заголовок H3").tag(3)
+                            Text("Заголовок H4").tag(4)
+                            Text("Заголовок H5").tag(5)
+                            Text("Заголовок H6").tag(6)
                         }
-                        .pickerStyle(.segmented)
+                        .pickerStyle(.wheel)
+                        .onChange(of: currentHeaderLevel) { newValue in
+                            if newValue > 0 {
+                                currentBold = true
+                            }
+                        }
                     }
-                    Section(footer: Text("Tip: If no text is selected, the chosen styles become your default typing style.")) {
-                        EmptyView()
+                    
+                    Section(header: Text("Текущие настройки")) {
+                        HStack {
+                            Text("Статус:")
+                            Spacer()
+                            Text(formattingStatusString())
+                                .foregroundColor(.secondary)
+                                .font(.caption)
+                        }
+                    }
+                    
+                    Section(header: Text("Как работает")) {
+                        Text("Настройки применяются к тексту, который вы будете вводить дальше")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                     }
                 }
-                .navigationTitle("Format")
+                .navigationTitle("Стиль текста")
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
-                        Button("Cancel") { showFormatSheet = false }
-                    }
-                    // Clear formatting: resets typing (or selection) to normal body style
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        Button("Clear") {
-                            textController.applyFormatting(
-                                bold: false,
-                                italic: false,
-                                underline: false,
-                                headerLevel: 0 // reset to body size
-                            )
+                        Button("Отмена") {
                             showFormatSheet = false
                         }
+                    }
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Button("Сбросить всё") {
+                            resetAllFormatting()
+                            showFormatSheet = false
+                        }
+                        .foregroundColor(.red)
                     }
                     ToolbarItem(placement: .confirmationAction) {
-                        Button("Apply") {
-                            // Apply only what user picked; leave others unchanged (nil)
-                            let b: Bool? = wantBold ? true : nil
-                            let i: Bool? = wantItalic ? true : nil
-                            let u: Bool? = wantUnderline ? true : nil
-                            let h: Int? = headerLevel > 0 ? headerLevel : nil
-                            textController.applyFormatting(bold: b, italic: i, underline: u, headerLevel: h)
+                        Button("Применить") {
+                            applyFormatting()
                             showFormatSheet = false
                         }
+                        .bold()
                     }
                 }
             }
             .presentationDetents([.medium, .large])
+            .onAppear {
+                updateFormattingStatesFromSelection()
+            }
         }
     }
 
-    // MARK: - Bottom bar
-
+    // MARK: - Bottom Bar
+    
     private var bottomBar: some View {
         HStack(spacing: 24) {
             // Undo
@@ -253,10 +267,10 @@ struct NoteDetailView: View {
 
             Spacer()
 
-            // Add Photo (centered, with menu)
+            // Add Photo
             Menu {
-                Button { handleCameraSelection() } label: { Label("Take Photo", systemImage: "camera") }
-                Button { handlePhotoLibrarySelection() } label: { Label("Choose from Library", systemImage: "photo.on.rectangle") }
+                Button { handleCameraSelection() } label: { Label("Снять фото", systemImage: "camera") }
+                Button { handlePhotoLibrarySelection() } label: { Label("Выбрать из галереи", systemImage: "photo.on.rectangle") }
             } label: {
                 Image(systemName: "camera.fill")
                     .font(.system(size: 20, weight: .semibold))
@@ -268,11 +282,7 @@ struct NoteDetailView: View {
 
             // Format
             Button {
-                // reset picks each time (optional)
-                wantBold = false
-                wantItalic = false
-                wantUnderline = false
-                headerLevel = 0
+                updateFormattingStatesFromSelection()
                 showFormatSheet = true
             } label: {
                 Image(systemName: "textformat")
@@ -280,6 +290,16 @@ struct NoteDetailView: View {
                     .foregroundColor(.primary)
                     .frame(width: 44, height: 44)
                     .background(.ultraThinMaterial, in: Circle())
+                    .overlay(
+                        Group {
+                            if currentBold || currentItalic || currentUnderline || currentHeaderLevel > 0 {
+                                Circle()
+                                    .fill(Color.accentColor)
+                                    .frame(width: 8, height: 8)
+                                    .offset(x: 8, y: -8)
+                            }
+                        }
+                    )
             }
 
             Spacer()
@@ -303,8 +323,6 @@ struct NoteDetailView: View {
         .padding(.bottom, 8)
     }
 
-    // MARK: - Subviews
-
     private var mediaPickerView: some View {
         MediaPicker(
             selectedImage: $selectedImage,
@@ -313,32 +331,196 @@ struct NoteDetailView: View {
         )
         .ignoresSafeArea()
     }
+}
 
-    // MARK: - Methods
+// MARK: - Formatting Methods
+extension NoteDetailView {
+    
+    private func debugCurrentFormatting() {
+        guard let textView = textController.textView else { return }
+        
+        let typingAttrs = textView.typingAttributes
+        print("=== DEBUG FORMATTING ===")
+        print("UI States - bold: \(currentBold), italic: \(currentItalic), underline: \(currentUnderline), header: \(currentHeaderLevel)")
+        
+        if let font = typingAttrs[.font] as? UIFont {
+            let traits = font.fontDescriptor.symbolicTraits
+            print("Current Font - name: \(font.fontName), size: \(font.pointSize)")
+            print("Font Traits - bold: \(traits.contains(.traitBold)), italic: \(traits.contains(.traitItalic))")
+        }
+        
+        let underline = (typingAttrs[.underlineStyle] as? Int) == NSUnderlineStyle.single.rawValue
+        print("Underline: \(underline)")
+        print("========================")
+    }
+    
+    private func applyFormatting() {
+        print("🔄 Applying formatting from UI - bold: \(currentBold), italic: \(currentItalic), underline: \(currentUnderline), header: \(currentHeaderLevel)")
+        debugCurrentFormatting()
+        
+        textController.applyFormatting(
+            bold: currentBold,
+            italic: currentItalic,
+            underline: currentUnderline,
+            headerLevel: currentHeaderLevel
+        )
+        
+        // Проверяем результат
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            self.debugCurrentFormatting()
+        }
+    }
+    
+    private func resetAllFormatting() {
+        currentBold = false
+        currentItalic = false
+        currentUnderline = false
+        currentHeaderLevel = 0
+        
+        textController.applyFormatting(
+            bold: false,
+            italic: false,
+            underline: false,
+            headerLevel: 0
+        )
+        
+        print("🔄 Formatting reset to default")
+    }
 
+    private func formattingStatusString() -> String {
+        var status: [String] = []
+        
+        if currentBold { status.append("Жирный") }
+        if currentItalic { status.append("Курсив") }
+        if currentUnderline { status.append("Подчёркивание") }
+        if currentHeaderLevel > 0 { status.append("H\(currentHeaderLevel)") }
+        
+        return status.isEmpty ? "Обычный текст" : status.joined(separator: ", ")
+    }
+    
+    private func updateFormattingStatesFromSelection() {
+        guard let textView = textController.textView else { return }
+        
+        let selectedRange = textView.selectedRange
+        if selectedRange.length > 0 {
+            // Для выделенного: берем атрибуты из диапазона (усредняем, если mixed)
+            var isBold = true
+            var isItalic = true
+            var isUnderline = true
+            var headerSize: CGFloat = 18
+            
+            textView.attributedText.enumerateAttributes(in: selectedRange, options: []) { attrs, _, _ in
+                if let font = attrs[.font] as? UIFont {
+                    let traits = font.fontDescriptor.symbolicTraits
+                    isBold = isBold && traits.contains(.traitBold)
+                    isItalic = isItalic && traits.contains(.traitItalic)
+                    headerSize = max(headerSize, font.pointSize) // Или логика для определения уровня
+                }
+                if let underlineValue = attrs[.underlineStyle] as? Int {
+                    isUnderline = isUnderline && (underlineValue == NSUnderlineStyle.single.rawValue)
+                }
+            }
+            
+            currentBold = isBold
+            currentItalic = isItalic
+            currentUnderline = isUnderline
+            
+            // Определяем headerLevel по max size (примерно)
+            switch headerSize {
+            case 32: currentHeaderLevel = 1
+            case 28: currentHeaderLevel = 2
+            case 24: currentHeaderLevel = 3
+            case 22: currentHeaderLevel = 4
+            case 20: currentHeaderLevel = 5
+            case 18 where currentBold: currentHeaderLevel = 6
+            default: currentHeaderLevel = 0
+            }
+        } else {
+            // Без выделения: typingAttributes (как сейчас)
+            let typingAttrs = textView.typingAttributes
+            
+            if let font = typingAttrs[.font] as? UIFont {
+                let traits = font.fontDescriptor.symbolicTraits
+                currentBold = traits.contains(.traitBold)
+                currentItalic = traits.contains(.traitItalic)
+                
+                let fontSize = font.pointSize
+                if traits.contains(.traitBold) {
+                    switch fontSize {
+                    case 32: currentHeaderLevel = 1
+                    case 28: currentHeaderLevel = 2
+                    case 24: currentHeaderLevel = 3
+                    case 22: currentHeaderLevel = 4
+                    case 20: currentHeaderLevel = 5
+                    case 18: currentHeaderLevel = 6
+                    default: currentHeaderLevel = 0
+                    }
+                } else {
+                    currentHeaderLevel = 0
+                }
+            }
+            
+            currentUnderline = (typingAttrs[.underlineStyle] as? Int) == NSUnderlineStyle.single.rawValue
+        }
+        
+        print("🔍 Current formatting - bold: \(currentBold), italic: \(currentItalic), underline: \(currentUnderline), header: \(currentHeaderLevel)")
+        debugCurrentFormatting()
+    }
+}
+
+// MARK: - Other Methods
+extension NoteDetailView {
+    
     private func handleCameraSelection() {
         isCheckingPermissions = true
 
         checkCameraPermission { granted in
             DispatchQueue.main.async {
-                isCheckingPermissions = false
+                self.isCheckingPermissions = false
                 if granted {
-                    mediaSourceType = .camera
+                    self.mediaSourceType = .camera
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        showMediaPicker = true
+                        self.showMediaPicker = true
                     }
                 } else {
-                    cameraError = "Camera access is required to take photos. Please enable camera access in Settings to use this feature."
-                    showCameraAlert = true
+                    self.cameraError = "Camera access is required to take photos. Please enable camera access in Settings to use this feature."
+                    self.showCameraAlert = true
                 }
             }
         }
     }
 
     private func handlePhotoLibrarySelection() {
-        mediaSourceType = .photoLibrary
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            showMediaPicker = true
+        isCheckingPermissions = true
+        checkPhotoLibraryPermission { granted in
+            DispatchQueue.main.async {
+                self.isCheckingPermissions = false
+                if granted {
+                    self.mediaSourceType = .photoLibrary
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        self.showMediaPicker = true
+                    }
+                } else {
+                    self.cameraError = "Photo library access is required to select photos. Please enable access in Settings."
+                    self.showCameraAlert = true  // Reuse alert for library
+                }
+            }
+        }
+    }
+
+    private func checkPhotoLibraryPermission(completion: @escaping (Bool) -> Void) {
+        let status = PHPhotoLibrary.authorizationStatus()
+        switch status {
+        case .authorized, .limited:  // Handle limited too
+            completion(true)
+        case .notDetermined:
+            PHPhotoLibrary.requestAuthorization { newStatus in
+                completion(newStatus == .authorized || newStatus == .limited)
+            }
+        case .denied, .restricted:
+            completion(false)
+        @unknown default:
+            completion(false)
         }
     }
 
@@ -362,7 +544,6 @@ struct NoteDetailView: View {
     private func handleSelectedImage(_ newImage: UIImage?) {
         guard let image = newImage else { return }
 
-        // Ensure note has an id so media files can be named and associated
         let noteId: UUID = {
             if let id = note.id { return id }
             let newId = UUID()
@@ -370,40 +551,34 @@ struct NoteDetailView: View {
             return newId
         }()
 
-        isSavingImage = true // блокируем выход
+        isSavingImage = true
 
         textController.insertImage(image, noteId: noteId) { originalName, thumbnailName in
             DispatchQueue.main.async {
                 guard let original = originalName else {
-                    isSavingImage = false
-                    selectedImage = nil
+                    self.isSavingImage = false
+                    self.selectedImage = nil
                     return
                 }
 
-                // безопасно обновляем photoPath
                 var paths = note.photoPath?
                     .split(separator: ",")
                     .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) } ?? []
                 paths.append(original)
                 note.photoPath = paths.joined(separator: ",")
 
-                // сохраняем заметку
                 do {
-                    try viewContext.save()
+                    try self.viewContext.save()
                 } catch {
                     print("Failed to save note after inserting image: \(error)")
                 }
 
-                isSavingImage = false
-                selectedImage = nil
-
-                // Не переустанавливаем editedText здесь — это вызовет пересоздание текста и скачок.
-                // Сохранение произойдёт через debouncedSaveNote() в onTextChange(.mediaInserted)
+                self.isSavingImage = false
+                self.selectedImage = nil
             }
         }
     }
 
-    /// Загрузка note -> editedText; проводим санитизацию (удаляем attachments из сохранённой версии)
     private func setupNote() {
         editedTitle = note.title ?? ""
 
@@ -414,20 +589,18 @@ struct NoteDetailView: View {
             editedText = NSAttributedString(string: note.text ?? "")
         }
 
-        // restoreMediaInText только тут! (НЕ дергать на каждое изменение ширины)
         let widthSnapshot = self.editorContentWidth
         DispatchQueue.global(qos: .userInitiated).async {
-            restoreMediaInText(using: widthSnapshot)
+            self.restoreMediaInText(using: widthSnapshot)
         }
 
         if startEditing {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                isEditorFocused = true
+                self.isEditorFocused = true
             }
         }
     }
 
-    /// Восстанавливает thumbnails в тексте (заменяет placeholder c .link = "media://file" на реальный NSTextAttachment -> thumbnail)
     private func restoreMediaInText(using containerWidth: CGFloat? = nil) {
         let base = NSMutableAttributedString(attributedString: editedText)
 
@@ -490,7 +663,7 @@ struct NoteDetailView: View {
     private func handleDisappear() {
         guard !isSavingImage else {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                handleDisappear()
+                self.handleDisappear()
             }
             return
         }
@@ -502,7 +675,7 @@ struct NoteDetailView: View {
             try? viewContext.save()
         } else {
             saveTask?.cancel()
-            saveNote() // Финальное принудительное сохранение
+            saveNote()
         }
     }
 
@@ -523,7 +696,6 @@ struct NoteDetailView: View {
         }
     }
 
-    /// Дебаунсер сохранения (0.7 сек после последнего действия)
     private func debouncedSaveNote() {
         saveTask?.cancel()
         saveTask = Task {
@@ -589,4 +761,3 @@ struct NoteDetailView: View {
         return mutable
     }
 }
-

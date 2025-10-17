@@ -25,7 +25,7 @@ final class AttributedEditorEngine {
 
         // Prepare attributed fragment: [attachment] + "\n"
         let imgString = NSMutableAttributedString(attachment: att)
-        imgString.addAttribute(.link, value: link, range: NSRange(location: 0, length: imgString.length))
+        // Removed: imgString.addAttribute(.link, value: link, range: NSRange(location: 0, length: imgString.length))  // Potential cause of image not displaying; handle tap separately if needed
 
         let newline = NSAttributedString(string: "\n", attributes: [
             .font: defaultFont,
@@ -39,6 +39,11 @@ final class AttributedEditorEngine {
         stabilizer?.performMutation(stabilizeTo: NSRange(location: insertLocation + imgString.length, length: 0)) { [weak self] in
             guard let self, let tv = self.textView else { return }
             let storage = tv.textStorage
+
+            let offsetBefore = tv.contentOffset
+            let rangeBefore = tv.selectedRange
+
+            storage.beginEditing()  // Batch changes to reduce layout jumps
 
             // Ensure surrounding paragraphs have consistent styles to avoid merging
             self.ensureStableParagraphStylesAround(location: insertLocation)
@@ -58,13 +63,25 @@ final class AttributedEditorEngine {
             
             // Fix paragraph styles after insertion
             self.fixParagraphStylesAroundAttachment(at: insertLocation)
-            self.cleanTypingAttributes()
+
+            storage.endEditing()  // Apply batch changes
+
+            // Force restore typing attributes after insert to prevent font size issues
+            tv.selectedRange = NSRange(location: insertLocation + imgString.length, length: 0)  // Move cursor after newline
+            tv.typingAttributes[.font] = self.defaultFont
+            tv.typingAttributes[.paragraphStyle] = AttachmentParagraphStyle.stableTrailing(for: self.defaultFont)
+
+            // Restore position to prevent jumps
+            tv.layoutIfNeeded()
+            tv.setContentOffset(offsetBefore, animated: false)
+            tv.selectedRange = rangeBefore  // But adjusted for insertion
+            tv.setNeedsDisplay()
         }
     }
 
     // MARK: - Improved paragraph styling
 
-    private func ensureStableParagraphStylesAround(location: Int) {
+    func ensureStableParagraphStylesAround(location: Int) {
         guard let tv = textView else { return }
         let storage = tv.textStorage
         let fullLen = storage.length
@@ -161,6 +178,11 @@ final class AttributedEditorEngine {
             guard let self, let tv = self.textView else { return }
             let storage = tv.textStorage
 
+            let offsetBefore = tv.contentOffset
+            let rangeBefore = tv.selectedRange
+
+            storage.beginEditing()
+
             if sel.length == 0 {
                 var typing = tv.typingAttributes
                 let base = (typing[.font] as? UIFont) ?? self.defaultFont
@@ -187,6 +209,12 @@ final class AttributedEditorEngine {
             // Ensure stable styles after formatting
             self.ensureStableParagraphStylesAround(location: sel.location)
             self.cleanTypingAttributes()
+
+            storage.endEditing()
+
+            tv.layoutIfNeeded()
+            tv.setContentOffset(offsetBefore, animated: false)
+            tv.selectedRange = rangeBefore
         }
     }
 
@@ -205,7 +233,6 @@ final class AttributedEditorEngine {
     private func cleanTypingAttributes() {
         guard let tv = textView else { return }
         tv.typingAttributes[.foregroundColor] = UIColor.label
-        tv.typingAttributes[.font] = defaultFont
         tv.typingAttributes[.paragraphStyle] = AttachmentParagraphStyle.body(for: defaultFont)
         tv.typingAttributes.removeValue(forKey: .link)
     }
