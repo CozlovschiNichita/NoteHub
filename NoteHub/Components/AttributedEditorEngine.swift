@@ -21,61 +21,113 @@ final class AttributedEditorEngine {
     // MARK: - Media insertion
 
     func insertAttachment(_ att: MediaAttachment, link: String) {
-        guard let tv = textView else { return }
+        guard let tv = textView, let image = att.image else { return }
 
-        // Prepare attributed fragment: [attachment] + "\n"
+        // Рассчитываем bounds на полную ширину
+        let fullBounds = resizeAttachmentBoundsToContainerWidth(for: image.size)
+        att.bounds = fullBounds
+
+        // Изолированный параграф для изображения
         let imgString = NSMutableAttributedString(attachment: att)
-        // Removed: imgString.addAttribute(.link, value: link, range: NSRange(location: 0, length: imgString.length))  // Potential cause of image not displaying; handle tap separately if needed
+        imgString.addAttribute(.link, value: link, range: NSRange(location: 0, length: imgString.length))
+        
+        // Применяем специальный стиль для изображения
+        let attachmentStyle = AttachmentParagraphStyle.attachment(for: fullBounds.height)
+        imgString.addAttribute(.paragraphStyle, value: attachmentStyle, range: NSRange(location: 0, length: imgString.length))
 
+        // Добавляем \n перед и после для полной изоляции
         let newline = NSAttributedString(string: "\n", attributes: [
             .font: defaultFont,
             .foregroundColor: UIColor.label,
-            .paragraphStyle: AttachmentParagraphStyle.make(for: defaultFont)
+            .paragraphStyle: AttachmentParagraphStyle.body(for: defaultFont)
         ])
-        imgString.append(newline)
+
+        let fullInsertString = NSMutableAttributedString()
+        fullInsertString.append(newline)
+        fullInsertString.append(imgString)
+        fullInsertString.append(newline)
 
         let insertLocation = tv.selectedRange.location
 
-        stabilizer?.performMutation(stabilizeTo: NSRange(location: insertLocation + imgString.length, length: 0)) { [weak self] in
+        stabilizer?.performMutation(stabilizeTo: NSRange(location: insertLocation + fullInsertString.length, length: 0)) { [weak self] in
             guard let self, let tv = self.textView else { return }
             let storage = tv.textStorage
-
             let offsetBefore = tv.contentOffset
-            let rangeBefore = tv.selectedRange
 
-            storage.beginEditing()  // Batch changes to reduce layout jumps
+            storage.beginEditing()
 
-            // Ensure surrounding paragraphs have consistent styles to avoid merging
-            self.ensureStableParagraphStylesAround(location: insertLocation)
+            // Очистка лишних переносов строк и принудительное разделение параграфа
+            self.forceParagraphBreak(at: insertLocation, storage: storage)
+            storage.insert(fullInsertString, at: insertLocation)
 
-            storage.insert(imgString, at: insertLocation)
+            // Применяем стабильные стили вокруг изображения
+            self.fixAttachmentParagraphIsolation(at: insertLocation, attachmentLength: imgString.length, storage: storage)
 
-            // If we inserted into an empty line that already had a newline after, avoid double newline
-            if insertLocation + imgString.length < storage.length {
-                let after = NSRange(location: insertLocation + imgString.length, length: 1)
-                if after.location < storage.length {
-                    let char = storage.attributedSubstring(from: after).string
-                    if char == "\n" {
-                        storage.deleteCharacters(in: after)
-                    }
-                }
-            }
-            
-            // Fix paragraph styles after insertion
-            self.fixParagraphStylesAroundAttachment(at: insertLocation)
+            storage.endEditing()
 
-            storage.endEditing()  // Apply batch changes
+            // Курсор после вставки
+            let newCursorPosition = NSRange(location: insertLocation + fullInsertString.length, length: 0)
+            tv.selectedRange = newCursorPosition
 
-            // Force restore typing attributes after insert to prevent font size issues
-            tv.selectedRange = NSRange(location: insertLocation + imgString.length, length: 0)  // Move cursor after newline
-            tv.typingAttributes[.font] = self.defaultFont
-            tv.typingAttributes[.paragraphStyle] = AttachmentParagraphStyle.stableTrailing(for: self.defaultFont)
+            // Сбрасываем typingAttributes для предотвращения наследования
+            tv.typingAttributes = [
+                .font: self.defaultFont,
+                .paragraphStyle: AttachmentParagraphStyle.body(for: self.defaultFont),
+                .foregroundColor: UIColor.label
+            ]
 
-            // Restore position to prevent jumps
             tv.layoutIfNeeded()
             tv.setContentOffset(offsetBefore, animated: false)
-            tv.selectedRange = rangeBefore  // But adjusted for insertion
             tv.setNeedsDisplay()
+        }
+    }
+
+    // MARK: - Attachment Isolation Helpers
+
+    private func forceParagraphBreak(at location: Int, storage: NSTextStorage) {
+        let fullLen = storage.length
+        guard location >= 0 && location <= fullLen else { return }
+
+        // Если не на границе параграфа, добавляем \n
+        if location > 0 {
+            let prevCharRange = NSRange(location: location - 1, length: 1)
+            if prevCharRange.location < fullLen {
+                let prevChar = storage.attributedSubstring(from: prevCharRange).string
+                if prevChar != "\n" {
+                    let newline = NSAttributedString(string: "\n", attributes: [
+                        .font: defaultFont,
+                        .paragraphStyle: AttachmentParagraphStyle.body(for: defaultFont)
+                    ])
+                    storage.insert(newline, at: location)
+                }
+            }
+        }
+    }
+
+    private func fixAttachmentParagraphIsolation(at location: Int, attachmentLength: Int, storage: NSTextStorage) {
+        let fullLen = storage.length
+
+        // Параграф изображения (после \n)
+        let attachmentStart = location + 1
+        let attachmentRange = NSRange(location: attachmentStart, length: attachmentLength)
+        if attachmentRange.location + attachmentRange.length <= fullLen {
+            let attachmentParagraph = (storage.string as NSString).paragraphRange(for: attachmentRange)
+            let attachmentStyle = AttachmentParagraphStyle.attachment(for: (storage.attribute(.attachment, at: attachmentStart, effectiveRange: nil) as? NSTextAttachment)?.bounds.height ?? defaultFont.lineHeight)
+            storage.addAttributes([
+                .paragraphStyle: attachmentStyle,
+                .font: defaultFont
+            ], range: attachmentParagraph)
+        }
+
+        // Следующий параграф (после \n)
+        let nextParagraphStart = attachmentStart + attachmentLength + 1
+        if nextParagraphStart < fullLen {
+            let nextParagraph = (storage.string as NSString).paragraphRange(for: NSRange(location: nextParagraphStart, length: 0))
+            storage.addAttributes([
+                .paragraphStyle: AttachmentParagraphStyle.body(for: defaultFont),
+                .font: defaultFont,
+                .foregroundColor: UIColor.label
+            ], range: nextParagraph)
         }
     }
 
@@ -88,133 +140,76 @@ final class AttributedEditorEngine {
         guard fullLen > 0 else { return }
 
         let bodyStyle = AttachmentParagraphStyle.body(for: defaultFont)
-        let trailingStyle = AttachmentParagraphStyle.stableTrailing(for: defaultFont)
-
-        // Apply styles to the paragraph where insertion happens
         let paragraphRange = (storage.string as NSString).paragraphRange(for: NSRange(location: min(location, fullLen - 1), length: 0))
-        
-        // Use trailing style if inserting after existing content
-        let isInsertingAfterContent = location > 0 && location < fullLen
-        let styleToApply = isInsertingAfterContent ? trailingStyle : bodyStyle
-        
+
         storage.addAttributes([
-            .paragraphStyle: styleToApply,
+            .paragraphStyle: bodyStyle,
             .font: defaultFont,
             .foregroundColor: UIColor.label
         ], range: paragraphRange)
     }
 
-    private func fixParagraphStylesAroundAttachment(at location: Int) {
-        guard let tv = textView else { return }
-        let storage = tv.textStorage
-        let fullLen = storage.length
-        
-        // Find paragraph with attachment
-        let attachmentParagraphRange = (storage.string as NSString).paragraphRange(for: NSRange(location: location, length: 0))
-        
-        // Apply stable style to paragraph after attachment
-        let nextParagraphStart = attachmentParagraphRange.location + attachmentParagraphRange.length
-        if nextParagraphStart < fullLen {
-            let nextParagraphRange = (storage.string as NSString).paragraphRange(for: NSRange(location: nextParagraphStart, length: 0))
-            storage.addAttributes([
-                .paragraphStyle: AttachmentParagraphStyle.stableTrailing(for: defaultFont),
-                .font: defaultFont,
-                .foregroundColor: UIColor.label
-            ], range: nextParagraphRange)
-        }
-    }
+    // MARK: - Formatting (synchronized with TextViewController)
 
-    // MARK: - Formatting
-
-    func applyFormatting(bold: Bool?, italic: Bool?, underline: Bool?, headerLevel: Int?) {
+    func applyFormatting(bold: Bool, italic: Bool, underline: Bool, headerLevel: Int) {
         guard let tv = textView else { return }
         let sel = tv.selectedRange
 
-        // Compute target font sizes
-        let bodySize = (tv.typingAttributes[.font] as? UIFont)?.pointSize ?? defaultFont.pointSize
-        let h1 = bodySize * 1.6
-        let h2 = bodySize * 1.35
-        let h3 = bodySize * 1.2
-
-        func font(from base: UIFont) -> UIFont {
-            var traits: UIFontDescriptor.SymbolicTraits = []
-            let currentDesc = base.fontDescriptor
-            let currentTraits = currentDesc.symbolicTraits
-            if currentTraits.contains(.traitBold) { traits.insert(.traitBold) }
-            if currentTraits.contains(.traitItalic) { traits.insert(.traitItalic) }
-
-            if let b = bold {
-                if b { traits.insert(.traitBold) } else { traits.remove(.traitBold) }
-            }
-            if let i = italic {
-                if i { traits.insert(.traitItalic) } else { traits.remove(.traitItalic) }
-            }
-
-            var targetSize = base.pointSize
-            if let h = headerLevel {
-                switch h {
-                case 1: targetSize = h1
-                case 2: targetSize = h2
-                case 3: targetSize = h3
-                default: targetSize = bodySize
-                }
-            }
-
-            if let newDesc = currentDesc.withSymbolicTraits(traits) {
-                return UIFont(descriptor: newDesc, size: targetSize)
-            } else {
-                if traits.contains([.traitBold, .traitItalic]) {
-                    if let d = UIFont.systemFont(ofSize: targetSize).fontDescriptor.withSymbolicTraits([.traitBold, .traitItalic]) {
-                        return UIFont(descriptor: d, size: targetSize)
-                    }
-                }
-                if traits.contains(.traitBold) { return UIFont.boldSystemFont(ofSize: targetSize) }
-                if traits.contains(.traitItalic) { return UIFont.italicSystemFont(ofSize: targetSize) }
-                return UIFont.systemFont(ofSize: targetSize)
-            }
+        let targetSize: CGFloat
+        switch headerLevel {
+        case 1: targetSize = 32
+        case 2: targetSize = 28
+        case 3: targetSize = 24
+        case 4: targetSize = 22
+        case 5: targetSize = 20
+        case 6: targetSize = 18
+        default: targetSize = defaultFont.pointSize
         }
+
+        let finalBold = headerLevel > 0 ? true : bold
+
+        func createFont(size: CGFloat, bold: Bool, italic: Bool) -> UIFont {
+            if bold && italic {
+                if let descriptor = UIFont.systemFont(ofSize: size).fontDescriptor
+                    .withSymbolicTraits([.traitBold, .traitItalic]) {
+                    return UIFont(descriptor: descriptor, size: size)
+                }
+            } else if bold {
+                return UIFont.boldSystemFont(ofSize: size)
+            } else if italic {
+                return UIFont.italicSystemFont(ofSize: size)
+            }
+            return UIFont.systemFont(ofSize: size)
+        }
+
+        let newFont = createFont(size: targetSize, bold: finalBold, italic: italic)
+
+        let newAttributes: [NSAttributedString.Key: Any] = [
+            .font: newFont,
+            .underlineStyle: underline ? NSUnderlineStyle.single.rawValue : 0,
+            .foregroundColor: UIColor.label,
+            .paragraphStyle: AttachmentParagraphStyle.body(for: defaultFont)
+        ]
 
         stabilizer?.performMutation(stabilizeTo: sel) { [weak self] in
             guard let self, let tv = self.textView else { return }
             let storage = tv.textStorage
-
             let offsetBefore = tv.contentOffset
-            let rangeBefore = tv.selectedRange
 
             storage.beginEditing()
 
             if sel.length == 0 {
-                var typing = tv.typingAttributes
-                let base = (typing[.font] as? UIFont) ?? self.defaultFont
-                typing[.font] = font(from: base)
-                if let u = underline { typing[.underlineStyle] = (u ? NSUnderlineStyle.single.rawValue : 0) }
-                typing[.foregroundColor] = UIColor.label
-                typing[.paragraphStyle] = AttachmentParagraphStyle.body(for: self.defaultFont)
-                typing.removeValue(forKey: .link)
-                tv.typingAttributes = typing
+                tv.typingAttributes = newAttributes
             } else {
-                let range = NSRange(location: sel.location, length: sel.length)
-                storage.enumerateAttributes(in: range, options: []) { attrs, subRange, _ in
-                    var newAttrs = attrs
-                    let base = (attrs[.font] as? UIFont) ?? self.defaultFont
-                    newAttrs[.font] = font(from: base)
-                    if let u = underline { newAttrs[.underlineStyle] = (u ? NSUnderlineStyle.single.rawValue : 0) }
-                    newAttrs[.foregroundColor] = UIColor.label
-                    newAttrs[.paragraphStyle] = AttachmentParagraphStyle.body(for: self.defaultFont)
-                    newAttrs.removeValue(forKey: .link)
-                    storage.setAttributes(newAttrs, range: subRange)
-                }
+                storage.addAttributes(newAttributes, range: sel)
+                storage.removeAttribute(.link, range: sel)
             }
-            
-            // Ensure stable styles after formatting
-            self.ensureStableParagraphStylesAround(location: sel.location)
-            self.cleanTypingAttributes()
 
+            self.ensureStableParagraphStylesAround(location: sel.location)
             storage.endEditing()
 
             tv.layoutIfNeeded()
             tv.setContentOffset(offsetBefore, animated: false)
-            tv.selectedRange = rangeBefore
         }
     }
 
@@ -222,18 +217,20 @@ final class AttributedEditorEngine {
 
     func resizeAttachmentBoundsToContainerWidth(for imageSize: CGSize) -> CGRect {
         guard let tv = textView else { return .zero }
-        let horizontalInset = tv.textContainerInset.left + tv.textContainerInset.right
-        let availableWidth = max(0, tv.bounds.width - horizontalInset)
-        let ratio = imageSize.width / max(imageSize.height, 0.0001)
-        let newWidth = min(availableWidth, imageSize.width)
-        let newHeight = newWidth / max(ratio, 0.0001)
+        // Используем полную ширину UITextView (без учета отступов, так как они уже 0 в FormattedTextView)
+        let availableWidth = tv.bounds.width
+        let ratio = imageSize.height / max(imageSize.width, 0.0001)
+        let newWidth = availableWidth
+        let newHeight = newWidth * ratio
         return CGRect(x: 0, y: 0, width: newWidth, height: newHeight)
     }
 
     private func cleanTypingAttributes() {
         guard let tv = textView else { return }
-        tv.typingAttributes[.foregroundColor] = UIColor.label
-        tv.typingAttributes[.paragraphStyle] = AttachmentParagraphStyle.body(for: defaultFont)
-        tv.typingAttributes.removeValue(forKey: .link)
+        tv.typingAttributes = [
+            .font: defaultFont,
+            .paragraphStyle: AttachmentParagraphStyle.body(for: defaultFont),
+            .foregroundColor: UIColor.label
+        ]
     }
 }

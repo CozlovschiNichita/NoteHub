@@ -182,12 +182,17 @@ final class TextViewController: ObservableObject {
                 let att = MediaAttachment()
                 att.fileName = result.original
                 att.image = thumbnail
+                // Устанавливаем bounds на полную ширину
                 att.bounds = engine.resizeAttachmentBoundsToContainerWidth(for: thumbnail.size)
 
                 engine.insertAttachment(att, link: "media://\(result.original)")
 
-                // Restore font after insertion to prevent small text issue
-                tv.typingAttributes[.font] = self.defaultFont
+                // Сбрасываем typingAttributes для предотвращения наследования
+                tv.typingAttributes = [
+                    .font: self.defaultFont,
+                    .paragraphStyle: AttachmentParagraphStyle.body(for: self.defaultFont),
+                    .foregroundColor: UIColor.label
+                ]
 
                 if let t = tv.attributedText {
                     self.onTextChange?(t, .mediaInserted)
