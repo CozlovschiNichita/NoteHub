@@ -58,7 +58,7 @@ struct NoteDetailView: View {
                     .font(.title)
                     .padding(.horizontal)
                     .padding(.top, 2)
-                    .onChange(of: editedTitle) { _ in
+                    .onChange(of: editedTitle) {
                         debouncedSaveNote()
                     }
 
@@ -110,16 +110,16 @@ struct NoteDetailView: View {
             .onAppear {
                 setupNote()
                 
-                textController.onTextChange = { [weak textController] newText, event in
+                textController.onTextChange = { newText, event in
                     switch event {
                     case .userFinishedEditing:
                         self.editedText = newText
-                        debouncedSaveNote()
+                        self.debouncedSaveNote()
                     case .mediaInserted:
-                        debouncedSaveNote()
+                        self.debouncedSaveNote()
                     case .other:
                         self.editedText = newText
-                        debouncedSaveNote()
+                        self.debouncedSaveNote()
                     }
                 }
 
@@ -178,7 +178,7 @@ struct NoteDetailView: View {
                 Form {
                     Section(header: Text("Стиль текста")) {
                         Toggle("Жирный", isOn: $currentBold)
-                            .onChange(of: currentBold) { newValue in
+                            .onChange(of: currentBold) { _, newValue in
                                 if !newValue && currentHeaderLevel > 0 {
                                     currentHeaderLevel = 0
                                 }
@@ -197,7 +197,7 @@ struct NoteDetailView: View {
                             Text("Заголовок H6").tag(6)
                         }
                         .pickerStyle(.wheel)
-                        .onChange(of: currentHeaderLevel) { newValue in
+                        .onChange(of: currentHeaderLevel) { _, newValue in
                             if newValue > 0 {
                                 currentBold = true
                             }
@@ -700,7 +700,9 @@ extension NoteDetailView {
         saveTask?.cancel()
         saveTask = Task {
             try? await Task.sleep(nanoseconds: 700_000_000)
-            await saveNote()
+            await MainActor.run {
+                saveNote()
+            }
         }
     }
 

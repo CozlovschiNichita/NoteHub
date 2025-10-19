@@ -17,7 +17,7 @@ final class TextLayoutStabilizer {
         // Snapshot selection and offset
         let originalSelection = tv.selectedRange
         let originalOffset = tv.contentOffset
-        let originalTransform = tv.transform
+        _ = tv.transform
 
         // Temporarily disable animations and layout updates
         tv.layoutIfNeeded()

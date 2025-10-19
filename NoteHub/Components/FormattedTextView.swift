@@ -192,7 +192,7 @@ struct FormattedTextView: UIViewRepresentable {
             textView.typingAttributes.removeValue(forKey: .link)
         }
 
-        func textView(_ textView: UITextView, shouldInteractWith URL: URL, in characterRange: NSRange, interaction: UITextItemInteraction) -> Bool {
+        func textView(_ textView: UITextView, shouldInteractWith URL: URL, in characterRange: NSRange) -> Bool {
             if URL.scheme == "media" {
                 let fileName = URL.absoluteString.replacingOccurrences(of: "media://", with: "")
                 parent.controller.onImageTap?(fileName)
