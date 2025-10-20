@@ -19,7 +19,6 @@ final class AttributedEditorEngine {
     }
 
     // MARK: - Media insertion
-
     func insertAttachment(_ att: MediaAttachment, link: String) {
         guard let tv = textView, let image = att.image else { return }
 
@@ -31,21 +30,27 @@ final class AttributedEditorEngine {
         let imgString = NSMutableAttributedString(attachment: att)
         imgString.addAttribute(.link, value: link, range: NSRange(location: 0, length: imgString.length))
         
-        // Применяем специальный стиль для изображения
+        // Применяем специальный стиль ТОЛЬКО для изображения
         let attachmentStyle = AttachmentParagraphStyle.attachment(for: fullBounds.height)
         imgString.addAttribute(.paragraphStyle, value: attachmentStyle, range: NSRange(location: 0, length: imgString.length))
 
-        // Добавляем \n перед и после для полной изоляции
-        let newline = NSAttributedString(string: "\n", attributes: [
+        // Добавляем \n перед и после для изоляции
+        let newlineBefore = NSAttributedString(string: "\n", attributes: [
             .font: defaultFont,
             .foregroundColor: UIColor.label,
             .paragraphStyle: AttachmentParagraphStyle.body(for: defaultFont)
         ])
+        
+        let newlineAfter = NSAttributedString(string: "\n", attributes: [
+            .font: defaultFont,
+            .foregroundColor: UIColor.label,
+            .paragraphStyle: AttachmentParagraphStyle.afterAttachment(for: defaultFont) // НОВЫЙ стиль
+        ])
 
         let fullInsertString = NSMutableAttributedString()
-        fullInsertString.append(newline)
+        fullInsertString.append(newlineBefore)
         fullInsertString.append(imgString)
-        fullInsertString.append(newline)
+        fullInsertString.append(newlineAfter)
 
         let insertLocation = tv.selectedRange.location
 
@@ -55,21 +60,14 @@ final class AttributedEditorEngine {
             let offsetBefore = tv.contentOffset
 
             storage.beginEditing()
-
-            // Очистка лишних переносов строк и принудительное разделение параграфа
-            self.forceParagraphBreak(at: insertLocation, storage: storage)
             storage.insert(fullInsertString, at: insertLocation)
-
-            // Применяем стабильные стили вокруг изображения
-            self.fixAttachmentParagraphIsolation(at: insertLocation, attachmentLength: imgString.length, storage: storage)
-
             storage.endEditing()
 
             // Курсор после вставки
             let newCursorPosition = NSRange(location: insertLocation + fullInsertString.length, length: 0)
             tv.selectedRange = newCursorPosition
 
-            // Сбрасываем typingAttributes для предотвращения наследования
+            // Сбрасываем typingAttributes
             tv.typingAttributes = [
                 .font: self.defaultFont,
                 .paragraphStyle: AttachmentParagraphStyle.body(for: self.defaultFont),
@@ -78,7 +76,6 @@ final class AttributedEditorEngine {
 
             tv.layoutIfNeeded()
             tv.setContentOffset(offsetBefore, animated: false)
-            tv.setNeedsDisplay()
         }
     }
 

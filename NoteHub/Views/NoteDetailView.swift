@@ -697,7 +697,7 @@ extension NoteDetailView {
                 attachment.fileName = fileName
                 attachment.image = thumb
                 
-                // ВАЖНО: Используем ТОТ ЖЕ расчет размеров, что и при вставке
+                // Тот же расчет размеров
                 let ratio = thumb.size.height / max(thumb.size.width, 0.0001)
                 let newWidth = containerW
                 let newHeight = newWidth * ratio
@@ -706,16 +706,44 @@ extension NoteDetailView {
                 let imageString = NSMutableAttributedString(attachment: attachment)
                 imageString.addAttribute(.link, value: "media://\(fileName)", range: NSRange(location: 0, length: imageString.length))
                 
-                // ВАЖНО: Добавляем правильный стиль параграфа для изображения
+                // Применяем ТОЛЬКО стиль для изображения
                 let attachmentStyle = AttachmentParagraphStyle.attachment(for: newHeight)
                 imageString.addAttribute(.paragraphStyle, value: attachmentStyle, range: NSRange(location: 0, length: imageString.length))
                 
-                // НЕ добавляем лишние переносы строк - только заменяем placeholder
+                // Простая замена
                 base.replaceCharacters(in: pair.range, with: imageString)
             } else {
-                // Если изображение не найдено, заменяем на пустую строку
                 base.replaceCharacters(in: pair.range, with: NSAttributedString(string: ""))
             }
+        }
+        
+        // ВАЖНО: После восстановления всех изображений, применяем правильные стили ко всему тексту
+        let fullTextRange = NSRange(location: 0, length: base.length)
+        let string = base.string as NSString
+        var position = 0
+        
+        while position < base.length {
+            let paragraphRange = string.paragraphRange(for: NSRange(location: position, length: 0))
+            
+            // Проверяем, содержит ли параграф изображение
+            var hasAttachment = false
+            base.enumerateAttribute(.attachment, in: paragraphRange, options: []) { value, range, stop in
+                if value != nil {
+                    hasAttachment = true
+                    stop.pointee = true
+                }
+            }
+            
+            let style: NSParagraphStyle
+            if hasAttachment {
+                // Для параграфа с изображением используем обычный стиль
+                style = AttachmentParagraphStyle.body(for: UIFont.systemFont(ofSize: 18))
+            } else {
+                style = AttachmentParagraphStyle.body(for: UIFont.systemFont(ofSize: 18))
+            }
+            
+            base.addAttribute(.paragraphStyle, value: style, range: paragraphRange)
+            position = paragraphRange.location + paragraphRange.length
         }
         
         DispatchQueue.main.async {
