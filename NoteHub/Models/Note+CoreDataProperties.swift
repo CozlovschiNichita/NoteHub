@@ -1,11 +1,3 @@
-//
-//  Note+CoreDataProperties.swift
-//  NoteHub
-//
-//  Created by nichita cozlovschi on 03.10.2025.
-//
-//
-
 public import Foundation
 public import CoreData
 

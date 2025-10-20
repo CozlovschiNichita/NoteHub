@@ -663,10 +663,10 @@ extension NoteDetailView {
 
     private func restoreMediaInText(using containerWidth: CGFloat? = nil) {
         let base = NSMutableAttributedString(attributedString: editedText)
-
+        
         let fullRange = NSRange(location: 0, length: base.length)
         var pairs: [(range: NSRange, fileName: String)] = []
-
+        
         base.enumerateAttribute(.link, in: fullRange, options: []) { value, range, _ in
             if let s = value as? String, s.hasPrefix("media://") {
                 let substring = base.attributedSubstring(from: range).string
@@ -676,7 +676,7 @@ extension NoteDetailView {
                 }
             }
         }
-
+        
         if pairs.isEmpty {
             DispatchQueue.main.async {
                 if let tv = self.textController.textView {
@@ -686,32 +686,38 @@ extension NoteDetailView {
             }
             return
         }
-
+        
         let measuredWidth = containerWidth ?? self.editorContentWidth
         let containerW = measuredWidth > 0 ? measuredWidth : 400
-
+        
         for pair in pairs.reversed() {
             let fileName = pair.fileName
             if let thumb = MediaManager.shared.loadThumbnail(named: fileName) {
                 let attachment = MediaAttachment()
                 attachment.fileName = fileName
                 attachment.image = thumb
-
-                let ratio = thumb.size.width / thumb.size.height
-                let newWidth = min(max(containerW - 40, 0), thumb.size.width)
-                let newHeight = newWidth / max(ratio, 0.0001)
+                
+                // ВАЖНО: Используем ТОТ ЖЕ расчет размеров, что и при вставке
+                let ratio = thumb.size.height / max(thumb.size.width, 0.0001)
+                let newWidth = containerW
+                let newHeight = newWidth * ratio
                 attachment.bounds = CGRect(x: 0, y: 0, width: newWidth, height: newHeight)
-
+                
                 let imageString = NSMutableAttributedString(attachment: attachment)
                 imageString.addAttribute(.link, value: "media://\(fileName)", range: NSRange(location: 0, length: imageString.length))
-                imageString.append(NSAttributedString(string: "\n\n"))
-
+                
+                // ВАЖНО: Добавляем правильный стиль параграфа для изображения
+                let attachmentStyle = AttachmentParagraphStyle.attachment(for: newHeight)
+                imageString.addAttribute(.paragraphStyle, value: attachmentStyle, range: NSRange(location: 0, length: imageString.length))
+                
+                // НЕ добавляем лишние переносы строк - только заменяем placeholder
                 base.replaceCharacters(in: pair.range, with: imageString)
             } else {
+                // Если изображение не найдено, заменяем на пустую строку
                 base.replaceCharacters(in: pair.range, with: NSAttributedString(string: ""))
             }
         }
-
+        
         DispatchQueue.main.async {
             if let tv = self.textController.textView {
                 tv.attributedText = base

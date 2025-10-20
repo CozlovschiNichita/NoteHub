@@ -171,7 +171,7 @@ final class TextViewController: ObservableObject {
             }
             let thumbnail = MediaManager.shared.loadThumbnail(named: result.thumbnail) ?? image
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { // Небольшая задержка для стабильности
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                 guard let tv = self.textView, let engine = self.engine else {
                     completion(nil, nil)
                     return
@@ -182,7 +182,8 @@ final class TextViewController: ObservableObject {
                 let att = MediaAttachment()
                 att.fileName = result.original
                 att.image = thumbnail
-                // Устанавливаем bounds на полную ширину
+                
+                // ВАЖНО: Устанавливаем bounds на полную ширину через engine
                 att.bounds = engine.resizeAttachmentBoundsToContainerWidth(for: thumbnail.size)
 
                 engine.insertAttachment(att, link: "media://\(result.original)")

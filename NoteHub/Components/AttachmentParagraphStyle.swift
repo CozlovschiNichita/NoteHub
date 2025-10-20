@@ -5,9 +5,9 @@ enum AttachmentParagraphStyle {
         let style = NSMutableParagraphStyle()
         style.alignment = .natural
         style.lineBreakMode = .byWordWrapping
-        style.lineSpacing = 0.5
-        style.paragraphSpacingBefore = baseFont.pointSize * 0.25
-        style.paragraphSpacing = baseFont.pointSize * 0.5
+        style.lineSpacing = 4
+        style.paragraphSpacingBefore = 8
+        style.paragraphSpacing = 8
         style.headIndent = 0
         style.firstLineHeadIndent = 0
         style.tailIndent = 0
@@ -18,9 +18,9 @@ enum AttachmentParagraphStyle {
         let style = NSMutableParagraphStyle()
         style.alignment = .natural
         style.lineBreakMode = .byWordWrapping
-        style.lineSpacing = 0.5
+        style.lineSpacing = 4
         style.paragraphSpacingBefore = 0
-        style.paragraphSpacing = baseFont.pointSize * 0.25
+        style.paragraphSpacing = 8
         return style
     }
 
@@ -28,27 +28,28 @@ enum AttachmentParagraphStyle {
         let style = NSMutableParagraphStyle()
         style.alignment = .natural
         style.lineBreakMode = .byWordWrapping
-        style.lineSpacing = 0.5
-        style.paragraphSpacingBefore = baseFont.pointSize * 0.1
-        style.paragraphSpacing = baseFont.pointSize * 0.25
+        style.lineSpacing = 4
+        style.paragraphSpacingBefore = 4
+        style.paragraphSpacing = 8
         return style
     }
 
-    // Новый стиль для параграфа с изображением
+    // Стиль для параграфа с изображением
     static func attachment(for imageHeight: CGFloat) -> NSParagraphStyle {
         let style = NSMutableParagraphStyle()
         style.alignment = .center
-        style.lineBreakMode = .byClipping // Запрещает переносы
+        style.lineBreakMode = .byWordWrapping // Возвращаем нормальный перенос
         style.lineSpacing = 0
-        style.paragraphSpacingBefore = 12
-        style.paragraphSpacing = 12
+        style.paragraphSpacingBefore = 8
+        style.paragraphSpacing = 8
         style.headIndent = 0
         style.firstLineHeadIndent = 0
         style.tailIndent = 0
-        if #available(iOS 13.0, *) {
-            style.minimumLineHeight = imageHeight // Фиксируем высоту строки
-            style.maximumLineHeight = imageHeight
-        }
+        
+        // ВАЖНО: Устанавливаем фиксированную высоту строки равной высоте изображения
+        style.minimumLineHeight = imageHeight
+        style.maximumLineHeight = imageHeight
+        
         return style
     }
 }
