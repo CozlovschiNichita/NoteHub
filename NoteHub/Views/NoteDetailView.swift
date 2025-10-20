@@ -71,6 +71,8 @@ struct NoteDetailView: View {
                 DispatchQueue.main.async {
                     self.audioRecordings.insert(newRecording, at: 0)
                     self.loadAudioRecordings()
+                    // Добавляем сохранение заметки при добавлении аудио
+                    self.debouncedSaveNote()
                 }
             }
         }
@@ -103,6 +105,7 @@ struct NoteDetailView: View {
                     self.editedText = newText
                     self.debouncedSaveNote()
                 case .mediaInserted:
+                    self.editedText = newText
                     self.debouncedSaveNote()
                 case .other:
                     self.editedText = newText
@@ -174,6 +177,8 @@ private extension NoteDetailView {
                             ForEach(audioRecordings, id: \.objectID) { recording in
                                 AudioPlayerView(audioRecording: recording, onDelete: {
                                     loadAudioRecordings()
+                                    // Сохраняем заметку при удалении аудио
+                                    debouncedSaveNote()
                                 })
                                 .id(recording.objectID)
                             }
@@ -401,6 +406,8 @@ private extension NoteDetailView {
                     Button("Применить") {
                         applyFormatting()
                         showFormatSheet = false
+                        // Сохраняем при изменении форматирования
+                        debouncedSaveNote()
                     }
                     .bold()
                 }
@@ -620,6 +627,8 @@ extension NoteDetailView {
 
                 do {
                     try self.viewContext.save()
+                    // Сохраняем заметку после добавления изображения
+                    self.debouncedSaveNote()
                 } catch {
                     return
                 }
@@ -719,8 +728,13 @@ extension NoteDetailView {
             return
         }
 
-        if editedTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-            editedText.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        // Изменяем условие - заметка не должна удаляться, если в ней есть медиа
+        let hasContent = !editedTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                        !editedText.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                        !(note.photoPath?.isEmpty ?? true) ||
+                        !audioRecordings.isEmpty
+
+        if !hasContent {
             MediaManager.shared.cleanupMedia(for: note)
             viewContext.delete(note)
             try? viewContext.save()
