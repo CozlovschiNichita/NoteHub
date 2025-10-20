@@ -48,105 +48,148 @@ struct NoteDetailView: View {
     // Дебаунсер для сохранения заметки
     @State private var saveTask: Task<Void, Never>? = nil
 
+    // Аудио записи
+    @State private var showAudioRecorder = false
+    @State private var audioRecordings: [AudioRecording] = []
+
     var startEditing: Bool = false
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            VStack(spacing: 0) {
-                // Заголовок
-                TextField("Title", text: $editedTitle)
-                    .font(.title)
-                    .padding(.horizontal)
-                    .padding(.top, 2)
-                    .onChange(of: editedTitle) {
-                        debouncedSaveNote()
-                    }
+            mainContent
 
-                Divider()
-
-                // Текстовый редактор
-                FormattedTextView(
-                    attributedText: $editedText,
-                    isFirstResponder: $isEditorFocused,
-                    controller: textController,
-                    bottomContentInset: bottomBarHeight + 12
-                )
-                .padding(.horizontal)
-                .frame(maxHeight: .infinity)
-                .background(Color(UIColor.systemBackground))
-                .background(
-                    GeometryReader { proxy in
-                        Color.clear
-                            .onAppear { editorContentWidth = proxy.size.width }
-                            .onChange(of: proxy.size) { _, newSize in
-                                editorContentWidth = newSize.width
-                            }
-                    }
-                )
-            }
-            .navigationBarTitleDisplayMode(.inline)
-            .navigationTitle(editedTitle.isEmpty ? "" : editedTitle)
-            .sheet(isPresented: $showMediaPicker) {
-                mediaPickerView
-            }
-            .onChange(of: selectedImage) { _, newValue in
-                handleSelectedImage(newValue)
-            }
-            .alert("Camera Access Required", isPresented: $showCameraAlert) {
-                Button("Settings") { openAppSettings() }
-                Button("Cancel", role: .cancel) { }
-            } message: {
-                Text(cameraError)
-            }
-            .overlay {
-                if isCheckingPermissions {
-                    ProgressView("Checking permissions...")
-                        .padding()
-                        .background(Color.black.opacity(0.8))
-                        .foregroundColor(.white)
-                        .cornerRadius(10)
-                }
-            }
-            .onAppear {
-                setupNote()
-                
-                textController.onTextChange = { newText, event in
-                    switch event {
-                    case .userFinishedEditing:
-                        self.editedText = newText
-                        self.debouncedSaveNote()
-                    case .mediaInserted:
-                        self.debouncedSaveNote()
-                    case .other:
-                        self.editedText = newText
-                        self.debouncedSaveNote()
-                    }
-                }
-
-                textController.onImageTap = { fileName in
-                    if let img = MediaManager.shared.loadImage(named: fileName) {
-                        self.fullImage = img
-                        self.isShowingFullImage = true
-                    }
-                }
-            }
-            .onDisappear {
-                handleDisappear()
-            }
-
-            // Bottom bar
             bottomBar
-                .background(
-                    GeometryReader { proxy in
-                        Color.clear
-                            .onAppear { bottomBarHeight = proxy.size.height }
-                            .onChange(of: proxy.size) { _, newSize in
-                                bottomBarHeight = newSize.height
-                            }
-                    }
-                )
+                .background(bottomBarBackgroundReader)
 
-            // Fullscreen preview
+            fullScreenOverlay
+        }
+        .sheet(isPresented: $showMediaPicker) {
+            mediaPickerView
+        }
+        .sheet(isPresented: $showAudioRecorder) {
+            AudioRecorderView(note: note) { newRecording in
+                DispatchQueue.main.async {
+                    self.audioRecordings.insert(newRecording, at: 0)
+                    self.loadAudioRecordings()
+                }
+            }
+        }
+        .onChange(of: selectedImage) { _, newValue in
+            handleSelectedImage(newValue)
+        }
+        .alert("Camera Access Required", isPresented: $showCameraAlert) {
+            Button("Settings") { openAppSettings() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text(cameraError)
+        }
+        .overlay {
+            if isCheckingPermissions {
+                ProgressView("Checking permissions...")
+                    .padding()
+                    .background(Color.black.opacity(0.8))
+                    .foregroundColor(.white)
+                    .cornerRadius(10)
+            }
+        }
+        .onAppear {
+            setupNote()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                self.loadAudioRecordings()
+            }
+            textController.onTextChange = { newText, event in
+                switch event {
+                case .userFinishedEditing:
+                    self.editedText = newText
+                    self.debouncedSaveNote()
+                case .mediaInserted:
+                    self.debouncedSaveNote()
+                case .other:
+                    self.editedText = newText
+                    self.debouncedSaveNote()
+                }
+            }
+            textController.onImageTap = { fileName in
+                if let img = MediaManager.shared.loadImage(named: fileName) {
+                    self.fullImage = img
+                    self.isShowingFullImage = true
+                }
+            }
+        }
+        .onDisappear {
+            handleDisappear()
+        }
+        .sheet(isPresented: $showFormatSheet) {
+            formatSheet
+                .onAppear { updateFormattingStatesFromSelection() }
+        }
+    }
+}
+
+// MARK: - Split subviews
+private extension NoteDetailView {
+    var mainContent: some View {
+        VStack(spacing: 0) {
+            // Заголовок
+            TextField("Title", text: $editedTitle)
+                .font(.title)
+                .padding(.horizontal)
+                .padding(.top, 2)
+                .onChange(of: editedTitle) {
+                    debouncedSaveNote()
+                }
+
+            Divider()
+
+            // Текстовый редактор
+            FormattedTextView(
+                attributedText: $editedText,
+                isFirstResponder: $isEditorFocused,
+                controller: textController,
+                bottomContentInset: bottomBarHeight + 12
+            )
+            .padding(.horizontal)
+            .frame(maxHeight: .infinity)
+            .background(Color(UIColor.systemBackground))
+            .background(editorWidthReader)
+
+            // Список аудиозаписей
+            audioRecordingsSection
+                .animation(.default, value: audioRecordings.count)
+        }
+        .navigationBarTitleDisplayMode(.inline)
+        .navigationTitle(editedTitle.isEmpty ? "" : editedTitle)
+    }
+
+    var audioRecordingsSection: some View {
+        Group {
+            if !audioRecordings.isEmpty {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Аудиозаписи")
+                        .font(.headline)
+                        .padding(.horizontal, 16)
+                    
+                    ScrollView(.vertical, showsIndicators: false) {
+                        LazyVStack(spacing: 12) {
+                            ForEach(audioRecordings, id: \.objectID) { recording in
+                                AudioPlayerView(audioRecording: recording, onDelete: {
+                                    loadAudioRecordings()
+                                })
+                                .id(recording.objectID)
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                    }
+                    .frame(maxHeight: 300)
+                }
+                .padding(.vertical, 8)
+            }
+        }
+        .animation(.default, value: audioRecordings.count)
+    }
+
+    var fullScreenOverlay: some View {
+        Group {
             if isShowingFullImage, let image = fullImage {
                 Color.black.ignoresSafeArea()
                 VStack(spacing: 0) {
@@ -173,87 +216,10 @@ struct NoteDetailView: View {
                 .zIndex(100)
             }
         }
-        .sheet(isPresented: $showFormatSheet) {
-            NavigationView {
-                Form {
-                    Section(header: Text("Стиль текста")) {
-                        Toggle("Жирный", isOn: $currentBold)
-                            .onChange(of: currentBold) { _, newValue in
-                                if !newValue && currentHeaderLevel > 0 {
-                                    currentHeaderLevel = 0
-                                }
-                            }
-                        Toggle("Курсив", isOn: $currentItalic)
-                        Toggle("Подчеркивание", isOn: $currentUnderline)
-                    }
-                    Section(header: Text("Заголовок")) {
-                        Picker("Уровень", selection: $currentHeaderLevel) {
-                            Text("Основной текст").tag(0)
-                            Text("Заголовок H1").tag(1)
-                            Text("Заголовок H2").tag(2)
-                            Text("Заголовок H3").tag(3)
-                            Text("Заголовок H4").tag(4)
-                            Text("Заголовок H5").tag(5)
-                            Text("Заголовок H6").tag(6)
-                        }
-                        .pickerStyle(.wheel)
-                        .onChange(of: currentHeaderLevel) { _, newValue in
-                            if newValue > 0 {
-                                currentBold = true
-                            }
-                        }
-                    }
-                    
-                    Section(header: Text("Текущие настройки")) {
-                        HStack {
-                            Text("Статус:")
-                            Spacer()
-                            Text(formattingStatusString())
-                                .foregroundColor(.secondary)
-                                .font(.caption)
-                        }
-                    }
-                    
-                    Section(header: Text("Как работает")) {
-                        Text("Настройки применяются к тексту, который вы будете вводить дальше")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                }
-                .navigationTitle("Стиль текста")
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Отмена") {
-                            showFormatSheet = false
-                        }
-                    }
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        Button("Сбросить всё") {
-                            resetAllFormatting()
-                            showFormatSheet = false
-                        }
-                        .foregroundColor(.red)
-                    }
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Применить") {
-                            applyFormatting()
-                            showFormatSheet = false
-                        }
-                        .bold()
-                    }
-                }
-            }
-            .presentationDetents([.medium, .large])
-            .onAppear {
-                updateFormattingStatesFromSelection()
-            }
-        }
     }
 
-    // MARK: - Bottom Bar
-    
-    private var bottomBar: some View {
-        HStack(spacing: 24) {
+    var bottomBar: some View {
+        HStack(spacing: 20) {
             // Undo
             Button {
                 textController.undo()
@@ -264,6 +230,7 @@ struct NoteDetailView: View {
                     .frame(width: 44, height: 44)
                     .background(.ultraThinMaterial, in: Circle())
             }
+            .buttonStyle(PlainButtonStyle())
 
             Spacer()
 
@@ -279,6 +246,19 @@ struct NoteDetailView: View {
                     .background(Color.accentColor, in: Circle())
                     .shadow(radius: 3)
             }
+            .buttonStyle(PlainButtonStyle())
+
+            // Audio Record
+            Button {
+                showAudioRecorder = true
+            } label: {
+                Image(systemName: "mic.fill")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundColor(.primary)
+                    .frame(width: 44, height: 44)
+                    .background(.ultraThinMaterial, in: Circle())
+            }
+            .buttonStyle(PlainButtonStyle())
 
             // Format
             Button {
@@ -301,6 +281,7 @@ struct NoteDetailView: View {
                         }
                     )
             }
+            .buttonStyle(PlainButtonStyle())
 
             Spacer()
 
@@ -314,6 +295,7 @@ struct NoteDetailView: View {
                     .frame(width: 44, height: 44)
                     .background(.ultraThinMaterial, in: Circle())
             }
+            .buttonStyle(PlainButtonStyle())
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
@@ -321,9 +303,10 @@ struct NoteDetailView: View {
         .clipShape(RoundedRectangle(cornerRadius: 16))
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
-    private var mediaPickerView: some View {
+    var mediaPickerView: some View {
         MediaPicker(
             selectedImage: $selectedImage,
             selectedVideoURL: .constant(nil),
@@ -331,44 +314,127 @@ struct NoteDetailView: View {
         )
         .ignoresSafeArea()
     }
+
+    // Geometry readers split out to lighten main expression
+    var editorWidthReader: some View {
+        GeometryReader { proxy in
+            Color.clear
+                .onAppear { editorContentWidth = proxy.size.width }
+                .onChange(of: proxy.size) { _, newSize in
+                    editorContentWidth = newSize.width
+                }
+        }
+    }
+
+    var bottomBarBackgroundReader: some View {
+        GeometryReader { proxy in
+            Color.clear
+                .onAppear { bottomBarHeight = proxy.size.height }
+                .onChange(of: proxy.size) { _, newSize in
+                    bottomBarHeight = newSize.height
+                }
+        }
+    }
+
+    var formatSheet: some View {
+        NavigationView {
+            Form {
+                Section(header: Text("Стиль текста")) {
+                    Toggle("Жирный", isOn: $currentBold)
+                        .onChange(of: currentBold) { _, newValue in
+                            if !newValue && currentHeaderLevel > 0 {
+                                currentHeaderLevel = 0
+                            }
+                        }
+                    Toggle("Курсив", isOn: $currentItalic)
+                    Toggle("Подчеркивание", isOn: $currentUnderline)
+                }
+                Section(header: Text("Заголовок")) {
+                    Picker("Уровень", selection: $currentHeaderLevel) {
+                        Text("Основной текст").tag(0)
+                        Text("Заголовок H1").tag(1)
+                        Text("Заголовок H2").tag(2)
+                        Text("Заголовок H3").tag(3)
+                        Text("Заголовок H4").tag(4)
+                        Text("Заголовок H5").tag(5)
+                        Text("Заголовок H6").tag(6)
+                    }
+                    .pickerStyle(.wheel)
+                    .onChange(of: currentHeaderLevel) { _, newValue in
+                        if newValue > 0 {
+                            currentBold = true
+                        }
+                    }
+                }
+                
+                Section(header: Text("Текущие настройки")) {
+                    HStack {
+                        Text("Статус:")
+                        Spacer()
+                        Text(formattingStatusString())
+                            .foregroundColor(.secondary)
+                            .font(.caption)
+                    }
+                }
+                
+                Section(header: Text("Как работает")) {
+                    Text("Настройки применяются к тексту, который вы будете вводить дальше")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .navigationTitle("Стиль текста")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Отмена") {
+                        showFormatSheet = false
+                    }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Сбросить всё") {
+                        resetAllFormatting()
+                        showFormatSheet = false
+                    }
+                    .foregroundColor(.red)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Применить") {
+                        applyFormatting()
+                        showFormatSheet = false
+                    }
+                    .bold()
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+}
+
+// MARK: - Audio Methods
+extension NoteDetailView {
+    private func loadAudioRecordings() {
+        let request: NSFetchRequest<AudioRecording> = AudioRecording.fetchRequest()
+        request.predicate = NSPredicate(format: "note == %@", note)
+        request.sortDescriptors = [NSSortDescriptor(key: "createdAt", ascending: false)]
+        
+        do {
+            let results = try viewContext.fetch(request)
+            self.audioRecordings = results
+        } catch {
+            self.audioRecordings = []
+        }
+    }
 }
 
 // MARK: - Formatting Methods
 extension NoteDetailView {
-    
-    private func debugCurrentFormatting() {
-        guard let textView = textController.textView else { return }
-        
-        let typingAttrs = textView.typingAttributes
-        print("=== DEBUG FORMATTING ===")
-        print("UI States - bold: \(currentBold), italic: \(currentItalic), underline: \(currentUnderline), header: \(currentHeaderLevel)")
-        
-        if let font = typingAttrs[.font] as? UIFont {
-            let traits = font.fontDescriptor.symbolicTraits
-            print("Current Font - name: \(font.fontName), size: \(font.pointSize)")
-            print("Font Traits - bold: \(traits.contains(.traitBold)), italic: \(traits.contains(.traitItalic))")
-        }
-        
-        let underline = (typingAttrs[.underlineStyle] as? Int) == NSUnderlineStyle.single.rawValue
-        print("Underline: \(underline)")
-        print("========================")
-    }
-    
     private func applyFormatting() {
-        print("🔄 Applying formatting from UI - bold: \(currentBold), italic: \(currentItalic), underline: \(currentUnderline), header: \(currentHeaderLevel)")
-        debugCurrentFormatting()
-        
         textController.applyFormatting(
             bold: currentBold,
             italic: currentItalic,
             underline: currentUnderline,
             headerLevel: currentHeaderLevel
         )
-        
-        // Проверяем результат
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            self.debugCurrentFormatting()
-        }
     }
     
     private func resetAllFormatting() {
@@ -383,18 +449,14 @@ extension NoteDetailView {
             underline: false,
             headerLevel: 0
         )
-        
-        print("🔄 Formatting reset to default")
     }
 
     private func formattingStatusString() -> String {
         var status: [String] = []
-        
         if currentBold { status.append("Жирный") }
         if currentItalic { status.append("Курсив") }
         if currentUnderline { status.append("Подчёркивание") }
         if currentHeaderLevel > 0 { status.append("H\(currentHeaderLevel)") }
-        
         return status.isEmpty ? "Обычный текст" : status.joined(separator: ", ")
     }
     
@@ -403,7 +465,6 @@ extension NoteDetailView {
         
         let selectedRange = textView.selectedRange
         if selectedRange.length > 0 {
-            // Для выделенного: берем атрибуты из диапазона (усредняем, если mixed)
             var isBold = true
             var isItalic = true
             var isUnderline = true
@@ -414,7 +475,7 @@ extension NoteDetailView {
                     let traits = font.fontDescriptor.symbolicTraits
                     isBold = isBold && traits.contains(.traitBold)
                     isItalic = isItalic && traits.contains(.traitItalic)
-                    headerSize = max(headerSize, font.pointSize) // Или логика для определения уровня
+                    headerSize = max(headerSize, font.pointSize)
                 }
                 if let underlineValue = attrs[.underlineStyle] as? Int {
                     isUnderline = isUnderline && (underlineValue == NSUnderlineStyle.single.rawValue)
@@ -425,7 +486,6 @@ extension NoteDetailView {
             currentItalic = isItalic
             currentUnderline = isUnderline
             
-            // Определяем headerLevel по max size (примерно)
             switch headerSize {
             case 32: currentHeaderLevel = 1
             case 28: currentHeaderLevel = 2
@@ -436,14 +496,11 @@ extension NoteDetailView {
             default: currentHeaderLevel = 0
             }
         } else {
-            // Без выделения: typingAttributes (как сейчас)
             let typingAttrs = textView.typingAttributes
-            
             if let font = typingAttrs[.font] as? UIFont {
                 let traits = font.fontDescriptor.symbolicTraits
                 currentBold = traits.contains(.traitBold)
                 currentItalic = traits.contains(.traitItalic)
-                
                 let fontSize = font.pointSize
                 if traits.contains(.traitBold) {
                     switch fontSize {
@@ -459,21 +516,15 @@ extension NoteDetailView {
                     currentHeaderLevel = 0
                 }
             }
-            
             currentUnderline = (typingAttrs[.underlineStyle] as? Int) == NSUnderlineStyle.single.rawValue
         }
-        
-        print("🔍 Current formatting - bold: \(currentBold), italic: \(currentItalic), underline: \(currentUnderline), header: \(currentHeaderLevel)")
-        debugCurrentFormatting()
     }
 }
 
 // MARK: - Other Methods
 extension NoteDetailView {
-    
     private func handleCameraSelection() {
         isCheckingPermissions = true
-
         checkCameraPermission { granted in
             DispatchQueue.main.async {
                 self.isCheckingPermissions = false
@@ -502,7 +553,7 @@ extension NoteDetailView {
                     }
                 } else {
                     self.cameraError = "Photo library access is required to select photos. Please enable access in Settings."
-                    self.showCameraAlert = true  // Reuse alert for library
+                    self.showCameraAlert = true
                 }
             }
         }
@@ -511,7 +562,7 @@ extension NoteDetailView {
     private func checkPhotoLibraryPermission(completion: @escaping (Bool) -> Void) {
         let status = PHPhotoLibrary.authorizationStatus()
         switch status {
-        case .authorized, .limited:  // Handle limited too
+        case .authorized, .limited:
             completion(true)
         case .notDetermined:
             PHPhotoLibrary.requestAuthorization { newStatus in
@@ -553,7 +604,7 @@ extension NoteDetailView {
 
         isSavingImage = true
 
-        textController.insertImage(image, noteId: noteId) { originalName, thumbnailName in
+        textController.insertImage(image, noteId: noteId) { originalName, _ in
             DispatchQueue.main.async {
                 guard let original = originalName else {
                     self.isSavingImage = false
@@ -570,7 +621,7 @@ extension NoteDetailView {
                 do {
                     try self.viewContext.save()
                 } catch {
-                    print("Failed to save note after inserting image: \(error)")
+                    return
                 }
 
                 self.isSavingImage = false
@@ -692,7 +743,7 @@ extension NoteDetailView {
         do {
             try viewContext.save()
         } catch {
-            print("Failed to save: \(error.localizedDescription)")
+            return
         }
     }
 
